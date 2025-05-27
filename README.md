@@ -35,7 +35,7 @@ We aim to automate, standardize, and maintain high-quality OS images through Git
 
 We leverage tools such as:
 
-- **Packer** to build disk images
+- **Libguestfs Tools** to build and customize disk images
 - **GitHub Actions** for automated CI/CD workflows
 - **cloud-init** for provisioning compatibility
 - **Validation pipelines** to ensure image quality
