@@ -22,12 +22,31 @@ We aim to automate, standardize, and maintain high-quality OS images through Git
 
 ## 📦 Available Images
 
-| OS         | Status         | Formats              |
-|------------|----------------|----------------------|
-| Ubuntu     | ✅ Stable       | QCOW2               |
-| Debian     | ✅ Stable       | QCOW2               |
-| Windows    | 🧪 Beta         | QCOW2 (VirtIO)       |
-| FreeBSD    | 🔬 Experimental | QCOW2                |
+### Linux Images
+
+| OS                | Status           | Formats             | Repository link                                     |
+|-------------------|------------------|---------------------|-----------------------------------------------------|
+| Alpaquita Linux   | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/alpaquita-linux   |
+| Alpine Linux      | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/alpine-linux      |
+| Amazon Linux 2    | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2    |
+| Amazon Linux 2023 | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2023 |
+
+### Windows Images
+
+| OS                     | Status          | Formats             | Repository link                                          |
+|------------------------|-----------------|---------------------|----------------------------------------------------------|
+| Windows Server 2025    | 🚧 Building     | QCOW2               | https://github.com/open-img-cloud/windows-server-2025    |
+| Windows Server 2022    | 🚧 Building     | QCOW2               | https://github.com/open-img-cloud/windows-server-2022    |
+| Windows Server 2019    | 🚧 Building     | QCOW2               | https://github.com/open-img-cloud/windows-server-2019    |
+| WIndows Server 2016    | 🚧 Building     | QCOW2               | https://github.com/open-img-cloud/windows-server-2016    |
+| Windows Server 2012 R2 | 🚧 Building     | QCOW2               | https://github.com/open-img-cloud/windows-server-2012-r2 |
+
+### BSD Images
+
+| OS                | Status           | Formats             | Repository link                           |
+|-------------------|------------------|---------------------|-------------------------------------------|
+| FreeBSD           | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/freebsd |
+
 
 ---
 
