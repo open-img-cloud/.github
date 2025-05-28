@@ -29,7 +29,7 @@ We aim to automate, standardize, and maintain high-quality OS images through Git
 | Alpaquita Linux   | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/alpaquita-linux   |
 | Alpine Linux      | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/alpine-linux      |
 | Amazon Linux 2    | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2    |
-| Amazon Linux 2023 | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2023 |
+| Amazon Linux 2023 | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2023 |
 
 ### Windows Images
 
