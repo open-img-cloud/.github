@@ -1,4 +1,4 @@
-# Open Images
+![Hero image](/open-images-logo.png)
 
 **Open Images** delivers secure, cloud-ready operating system images (Linux, Windows, BSD, etc.) for **OpenStack** and **Proxmox** environments.
 
