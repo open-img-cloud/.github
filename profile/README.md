@@ -1,4 +1,4 @@
-![Hero image](/open-images-logo.png)
+![Hero image](https://raw.githubusercontent.com/open-img-cloud/.github/refs/heads/main/profile/img/open-images-logo.png)
 
 **Open Images** delivers secure, cloud-ready operating system images (Linux, Windows, BSD, etc.) for **OpenStack** and **Proxmox** environments.
 
