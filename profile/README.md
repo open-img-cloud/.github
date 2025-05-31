@@ -30,6 +30,8 @@ We aim to automate, standardize, and maintain high-quality OS images through Git
 | Alpine Linux      | 🚧 Building      | QCOW2               | https://github.com/open-img-cloud/alpine-linux      |
 | Amazon Linux 2    | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2    |
 | Amazon Linux 2023 | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/amazon-linux-2023 |
+| Gentoo Linux      | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/gentoo-linux      |
+| Oracle Linux      | ✅ Stable        | QCOW2               | https://github.com/open-img-cloud/oracle-linux      |
 
 ### Windows Images
 
