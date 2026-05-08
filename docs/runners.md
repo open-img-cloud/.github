@@ -65,6 +65,7 @@ Create a system user that owns the runner. Keep it **non-root**.
 ```sh
 sudo useradd --system --create-home --home-dir /var/lib/gh-runner --shell /bin/bash gh-runner
 sudo usermod -aG kvm gh-runner   # grants /dev/kvm access
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 gh-runner  # rootless podman (see §3.2)
 ```
 
 Verify:
@@ -72,15 +73,76 @@ Verify:
 ```sh
 sudo -u gh-runner stat -c '%A %G' /dev/kvm   # expect "crw-rw----" and "kvm"
 sudo -u gh-runner test -r /dev/kvm && echo OK
+grep '^gh-runner:' /etc/subuid /etc/subgid
 ```
 
 ## 3. SELinux
 
 The runner will spawn rootless podman containers and pass `/dev/kvm` to them.
 On Rocky 10 SELinux Enforcing this works out of the box for `--device=/dev/kvm`,
-but bind mounts from the runner workspace into containers need the `:Z` flag
-(already used in the reusable workflows). If you see AVC denials on
-`/var/lib/gh-runner/_work/`, run:
+but **two non-obvious adjustments are required** before the runner systemd
+service can start. Both are already encoded in the bootstrap below; this
+section documents *why*.
+
+### 3.1 Relabel runner executables to `bin_t`
+
+systemd refuses to `exec` files labeled `var_lib_t` even when the file is
+owned by the unit's `User=` and has mode `755`. The failure shows up as:
+
+```
+status=203/EXEC ... Unable to locate executable '/var/lib/gh-runner/runsvc.sh': Permission denied
+```
+
+with **no AVC entry in the audit log** (the denial happens before the
+audit hook fires, even with `semodule -DB`). The fix is to label the
+runner's entry-point scripts and bundled Node interpreter as `bin_t`,
+which systemd treats as a legitimate exec target.
+
+Apply persistently so `restorecon` doesn't undo it:
+
+```sh
+for spec in \
+    '/var/lib/gh-runner/runsvc\.sh' \
+    '/var/lib/gh-runner/run\.sh' \
+    '/var/lib/gh-runner/run-helper\.sh' \
+    '/var/lib/gh-runner/externals/node[0-9]+/bin(/.*)?'; do
+  sudo semanage fcontext -a -t bin_t "$spec" 2>/dev/null || \
+  sudo semanage fcontext -m -t bin_t "$spec"
+done
+sudo restorecon -RFv \
+    /var/lib/gh-runner/runsvc.sh \
+    /var/lib/gh-runner/run.sh \
+    /var/lib/gh-runner/run-helper.sh \
+    /var/lib/gh-runner/externals/
+```
+
+Note the `node[0-9]+` regex: actions-runner self-updates and may bump the
+bundled Node major (currently `node20`); the regex covers future bumps.
+
+### 3.2 Subuid / subgid for rootless podman
+
+System users created via `useradd --system` do not get entries in
+`/etc/subuid` and `/etc/subgid` by default. Without them, rootless podman
+fails at user namespace setup with:
+
+```
+no subuid ranges found for user "gh-runner"
+```
+
+Allocate a 64K range:
+
+```sh
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 gh-runner
+```
+
+If you have multiple non-root users running rootless podman on the same
+host, allocate non-overlapping ranges (e.g. `100000-165535`,
+`200000-265535`, …).
+
+### 3.3 Workspace bind mounts
+
+If the consumer workflow bind-mounts the runner workspace into a container
+and you see AVC denials on `/var/lib/gh-runner/_work/`:
 
 ```sh
 sudo restorecon -Rv /var/lib/gh-runner
@@ -93,7 +155,7 @@ sudo semanage fcontext -a -t container_file_t '/var/lib/gh-runner/_work(/.*)?'
 sudo restorecon -Rv /var/lib/gh-runner/_work
 ```
 
-> **Never** propose `setenforce 0` as a fix. Always trace the AVC with
+> **Never** propose `setenforce 0` as a fix. Always trace AVCs with
 > `sudo ausearch -m AVC -ts recent` and adjust contexts/booleans.
 
 ## 4. Install the GitHub Actions runner
@@ -150,6 +212,9 @@ sudo -u gh-runner ./config.sh \
 
 ## 6. Install as a systemd service
 
+> **Apply the SELinux relabel from §3.1 first** (before `svc.sh start`),
+> otherwise the service fails immediately with `status=203/EXEC`.
+
 ```sh
 cd /var/lib/gh-runner
 sudo ./svc.sh install gh-runner
@@ -186,7 +251,7 @@ If KVM isn't available inside the container, the libguestfs appliance
 falls back to TCG and the build is dramatically slower. Check:
 
 ```sh
-podman run --rm --device=/dev/kvm ghcr.io/stackopshq/libguestfs-tools:v2 \
+podman run --rm --device=/dev/kvm ghcr.io/stackopshq/libguestfs-tools:2 \
     libguestfs-test-tool 2>&1 | grep -i 'kvm enabled'
 ```
 
@@ -220,9 +285,12 @@ later promoted to production:
 
 | Symptom                                                               | Fix                                                                                  |
 |-----------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| `status=203/EXEC ... Unable to locate executable '...': Permission denied` (no AVC in audit log) | systemd refuses to exec `var_lib_t`-labelled files even when the User= owns them. Apply the persistent `bin_t` fcontext rules from §3.1 + `restorecon`. |
+| `no subuid ranges found for user "gh-runner"` (rootless podman)        | Allocate subuid/subgid: `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 gh-runner` (§3.2). |
 | `Could not access KVM kernel module: Permission denied`               | Runner user not in `kvm` group. `sudo usermod -aG kvm gh-runner && sudo systemctl restart gh-runner.service`. |
 | `libguestfs: error: appliance closed connection unexpectedly`         | Likely OOM. Bump `LIBGUESTFS_MEMSIZE=8192` in the consumer workflow or runner host.  |
 | `Cosign verification failed: certificate identity does not match`     | Builder image was rebuilt under a different repo/identity. Update `builder_cert_identity` input or revert to the canonical `stackopshq` source. |
-| AVC denial on `/var/lib/gh-runner/_work/...`                          | `sudo restorecon -Rv /var/lib/gh-runner` (or persistent fcontext, see §3).            |
+| AVC denial on `/var/lib/gh-runner/_work/...`                          | `sudo restorecon -Rv /var/lib/gh-runner` (or persistent fcontext, see §3.3).         |
 | Runner picks up jobs but they never start (queued forever)            | Labels mismatch. Confirm the runner has all of `self-hosted,Linux,kvm`.              |
+| `manifest unknown` when pulling `ghcr.io/stackopshq/libguestfs-tools:vN` | Tags on GHCR have no `v` prefix — use `:N`, `:N.M`, or `:N.M.P` (e.g. `:2`, not `:v2`). |
 | `podman: Error: short-name resolution enforced but cannot prompt`     | The container ref needs to be fully qualified (it is, in the workflows). Check that no caller overrides `build_container` with a short name. |

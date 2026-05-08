@@ -11,7 +11,7 @@ labels matching `["self-hosted","Linux","kvm"]` by default; consumers can
 override via the `runner_labels` input.
 
 Builds execute inside the **stackopshq builder image**
-(`ghcr.io/stackopshq/libguestfs-tools:v2`), pinned to a major version. Before
+(`ghcr.io/stackopshq/libguestfs-tools:2`), pinned to a major version. Before
 the build job starts, a `verify-builder` job runs `cosign verify` against the
 image's keyless signature; the build is aborted if verification fails. See
 [`docs/runners.md`](docs/runners.md) for runner provisioning details.
