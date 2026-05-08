@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+  "timezone": "Europe/Zurich",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 8,
+
+  "github-actions": {
+    "pinDigests": true
+  },
+
+  "packageRules": [
+    {
+      "description": "Group all GitHub Actions bumps into one weekly PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "automerge": false
+    },
+    {
+      "description": "Track stackopshq/libguestfs-tools default in reusable workflows",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["ghcr.io/stackopshq/libguestfs-tools"],
+      "groupName": "stackopshq-builder",
+      "automerge": false
+    }
+  ],
+
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  },
+
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+
+  "customManagers": [
+    {
+      "description": "Pick up build_container default in reusable workflows for Renovate tracking",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "default:\\s*'(?<depName>ghcr\\.io/[^:'@\\s]+)(?::(?<currentValue>[^'@\\s]+))?(?:@(?<currentDigest>sha256:[a-f0-9]+))?'"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}
