@@ -56,7 +56,7 @@ on:
       build_container:
         description: 'OCI image providing libguestfs tools, qemu-img, jq, curl. Must be signed via cosign keyless.'
         type: string
-        default: 'ghcr.io/stackopshq/libguestfs-tools:v2'
+        default: 'ghcr.io/stackopshq/libguestfs-tools:2'
       builder_cert_identity:
         description: 'Cosign --certificate-identity-regexp to verify the build_container signature against. Override if you fork the builder image to a different repo.'
         type: string

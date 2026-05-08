@@ -43,7 +43,7 @@ on:
       build_container:
         description: 'OCI image with python venv, qemu-img, libguestfs, DIB deps installable. Must be cosign-signed.'
         type: string
-        default: 'ghcr.io/stackopshq/libguestfs-tools:v2'
+        default: 'ghcr.io/stackopshq/libguestfs-tools:2'
       builder_cert_identity:
         description: 'Cosign --certificate-identity-regexp to verify the build_container signature against.'
         type: string
