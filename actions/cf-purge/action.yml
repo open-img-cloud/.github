@@ -1,0 +1,52 @@
+name: 'Purge Cloudflare cache'
+description: 'Invalidates a list of full URLs from the Cloudflare edge cache for a given zone.'
+
+inputs:
+  zone_id:
+    description: 'Cloudflare Zone ID'
+    required: true
+  api_token:
+    description: 'Cloudflare API token with Zone:Cache Purge permission'
+    required: true
+  paths:
+    description: 'Multiline list of full URLs to purge (one per line). Empty lines ignored.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Purge cache
+      shell: bash
+      env:
+        CF_ZONE_ID: ${{ inputs.zone_id }}
+        CF_TOKEN: ${{ inputs.api_token }}
+        CF_PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+        if ! command -v jq >/dev/null; then
+          echo "::error::jq is required for cf-purge"
+          exit 1
+        fi
+        urls=()
+        while IFS= read -r line; do
+          line="${line//[$'\r\n']/}"
+          line="${line## }"; line="${line%% }"
+          [[ -n "$line" ]] && urls+=("$line")
+        done <<< "$CF_PATHS"
+        if [[ ${#urls[@]} -eq 0 ]]; then
+          echo "No URLs to purge — skipping."
+          exit 0
+        fi
+        body=$(printf '%s\n' "${urls[@]}" | jq -R . | jq -sc '{files: .}')
+        echo "Purging ${#urls[@]} URL(s):"
+        printf '  %s\n' "${urls[@]}"
+        resp=$(curl -fsS -X POST \
+          -H "Authorization: Bearer $CF_TOKEN" \
+          -H "Content-Type: application/json" \
+          --data "$body" \
+          "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_cache")
+        echo "$resp" | jq .
+        if [[ "$(echo "$resp" | jq -r .success)" != "true" ]]; then
+          echo "::error::Cloudflare purge failed"
+          exit 1
+        fi

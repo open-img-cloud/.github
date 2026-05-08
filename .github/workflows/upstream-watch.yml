@@ -1,0 +1,126 @@
+name: Reusable upstream version watcher
+
+# Reusable workflow that detects whether a new upstream version exists for the caller image
+# repo, and opens (or updates) a PR bumping the version file when it does.
+#
+# The caller provides a small detect script printing the latest upstream version on stdout.
+# Implementation strategies are per-OS (HTTP HEAD + parse Location, GitHub releases API,
+# scrape mirror index, etc.) and live in the caller repo for clarity.
+#
+# Caller workflow MUST declare:
+#   permissions:
+#     contents: write
+#     pull-requests: write
+
+on:
+  workflow_call:
+    inputs:
+      os_name:
+        description: 'OS / repo slug, used in PR title and commit message.'
+        type: string
+        required: true
+      detect_script:
+        description: 'Path to executable script that prints latest upstream version on stdout.'
+        type: string
+        default: 'build/detect-upstream.sh'
+      version_file:
+        description: 'Path to file holding the current pinned version (single line).'
+        type: string
+        default: 'VERSION'
+      pr_branch:
+        description: 'Branch name used for the auto-bump PR.'
+        type: string
+        default: 'auto/upstream-bump'
+      pr_assignees:
+        description: 'Comma-separated list of GitHub logins to assign to the PR.'
+        type: string
+        default: ''
+      runner_labels:
+        description: 'Runner labels (defaults to GitHub-hosted ubuntu-latest, no KVM needed).'
+        type: string
+        default: '["ubuntu-latest"]'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Run detect script
+        id: detect
+        shell: bash
+        env:
+          DETECT_SCRIPT: ${{ inputs.detect_script }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$DETECT_SCRIPT" ]]; then
+            echo "::error::detect_script not found: $DETECT_SCRIPT"
+            exit 1
+          fi
+          chmod +x "$DETECT_SCRIPT"
+          latest=$(bash "$DETECT_SCRIPT" | tail -n1 | tr -d '[:space:]')
+          if [[ -z "$latest" ]]; then
+            echo "::error::detect_script produced empty output"
+            exit 1
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "Detected upstream version: $latest"
+
+      - name: Compare with current
+        id: compare
+        shell: bash
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          LATEST: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          current=""
+          if [[ -f "$VERSION_FILE" ]]; then
+            current=$(tr -d '[:space:]' < "$VERSION_FILE")
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [[ "$current" == "$LATEST" ]]; then
+            echo "Already up to date ($current)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Bump required: $current -> $LATEST"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write new version file
+        if: steps.compare.outputs.changed == 'true'
+        shell: bash
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          LATEST: ${{ steps.detect.outputs.latest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$VERSION_FILE")"
+          printf '%s\n' "$LATEST" > "$VERSION_FILE"
+
+      - name: Open or update bump PR
+        if: steps.compare.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c  # v6
+        with:
+          branch: ${{ inputs.pr_branch }}
+          delete-branch: true
+          commit-message: "chore(${{ inputs.os_name }}): bump upstream to ${{ steps.detect.outputs.latest }}"
+          title: "chore(${{ inputs.os_name }}): bump upstream to ${{ steps.detect.outputs.latest }}"
+          body: |
+            Automated upstream bump.
+
+            - **Previous**: `${{ steps.compare.outputs.current }}`
+            - **Latest**: `${{ steps.detect.outputs.latest }}`
+            - Detected by: `${{ inputs.detect_script }}`
+            - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Merging this PR will trigger a fresh image build on the new tag.
+          assignees: ${{ inputs.pr_assignees }}
+          labels: |
+            automated
+            upstream-bump

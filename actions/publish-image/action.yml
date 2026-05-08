@@ -1,0 +1,179 @@
+name: 'Publish image to Garage and R2'
+description: 'Dual-uploads a directory of artifacts to Garage (source of truth) and R2 (public mirror), generates an HTML index, and optionally syncs the version to the latest/ alias.'
+
+inputs:
+  os_name:
+    description: 'OS / repo slug used as bucket prefix (e.g., "alpaquita-linux").'
+    required: true
+  version:
+    description: 'Version string used as second-level path segment.'
+    required: true
+  artifacts_dir:
+    description: 'Local directory whose contents will be uploaded.'
+    required: true
+  bucket_name:
+    description: 'Bucket name on both backends (must match for path consistency).'
+    required: false
+    default: 'oic-images'
+  also_latest:
+    description: 'If "true", mirror the version directory under <os_name>/latest/.'
+    required: false
+    default: 'true'
+
+  garage_endpoint:
+    required: true
+  garage_key_id:
+    required: true
+  garage_secret:
+    required: true
+  garage_region:
+    required: false
+    default: 'garage'
+
+  r2_endpoint:
+    required: true
+  r2_key_id:
+    required: true
+  r2_secret:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ ! -d "${{ inputs.artifacts_dir }}" ]]; then
+          echo "::error::artifacts_dir does not exist: ${{ inputs.artifacts_dir }}"
+          exit 1
+        fi
+        for v in "${{ inputs.os_name }}" "${{ inputs.version }}"; do
+          if [[ -z "$v" || "$v" =~ \.\. || "$v" =~ / ]]; then
+            echo "::error::invalid path segment: '$v'"
+            exit 1
+          fi
+        done
+
+    - name: Install aws-cli if missing
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v aws >/dev/null; then
+          aws --version
+          exit 0
+        fi
+        tmp=$(mktemp -d)
+        curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "$tmp/awscliv2.zip"
+        unzip -q "$tmp/awscliv2.zip" -d "$tmp"
+        "$tmp/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli >/dev/null
+        rm -rf "$tmp"
+        aws --version
+
+    - name: Generate index.html for the version directory
+      shell: bash
+      env:
+        ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        OS_NAME: ${{ inputs.os_name }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        cd "$ARTIFACTS_DIR"
+        {
+          cat <<HTML
+        <!DOCTYPE html>
+        <html lang="en"><head>
+        <meta charset="utf-8">
+        <title>${OS_NAME} ${VERSION} — Open Images</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>
+          body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:960px;margin:2rem auto;padding:0 1rem;color:#222}
+          h1{border-bottom:1px solid #ccc;padding-bottom:.5rem}
+          table{border-collapse:collapse;width:100%}
+          th,td{text-align:left;padding:.4rem .8rem;border-bottom:1px solid #eee}
+          a{color:#0660d8;text-decoration:none}a:hover{text-decoration:underline}
+          .size{text-align:right;color:#666;font-variant-numeric:tabular-nums}
+          footer{margin-top:2rem;color:#888;font-size:.9rem}
+          code{background:#f5f5f5;padding:.1rem .3rem;border-radius:3px}
+        </style></head><body>
+        <h1>${OS_NAME} / ${VERSION}</h1>
+        <p>Verify with <code>sha256sum -c SHA256SUMS</code> · signatures via <code>cosign verify-blob</code></p>
+        <table><tr><th>File</th><th class="size">Size</th></tr>
+        HTML
+          for f in $(find . -maxdepth 1 -type f -not -name 'index.html' -printf '%f\n' | sort); do
+            size=$(stat -c %s "$f")
+            if   [[ $size -ge 1073741824 ]]; then h=$(awk -v s="$size" 'BEGIN{printf "%.2f GB",s/1073741824}')
+            elif [[ $size -ge 1048576    ]]; then h=$(awk -v s="$size" 'BEGIN{printf "%.2f MB",s/1048576}')
+            elif [[ $size -ge 1024       ]]; then h=$(awk -v s="$size" 'BEGIN{printf "%.2f KB",s/1024}')
+            else                                   h="${size} B"
+            fi
+            printf '<tr><td><a href="%s">%s</a></td><td class="size">%s</td></tr>\n' "$f" "$f" "$h"
+          done
+          cat <<HTML
+        </table>
+        <footer>Built $(date -u +%Y-%m-%dT%H:%M:%SZ) · <a href="https://github.com/open-img-cloud/${OS_NAME}">source</a> · <a href="https://openimages.cloud">openimages.cloud</a></footer>
+        </body></html>
+        HTML
+        } > index.html
+
+    - name: Upload versioned artifacts to Garage and R2
+      shell: bash
+      env:
+        ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        DEST_PREFIX: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/${{ inputs.version }}/
+        GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
+        GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
+        GARAGE_SECRET: ${{ inputs.garage_secret }}
+        GARAGE_REGION: ${{ inputs.garage_region }}
+        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
+        R2_KEY_ID: ${{ inputs.r2_key_id }}
+        R2_SECRET: ${{ inputs.r2_secret }}
+      run: |
+        set -euo pipefail
+        upload() {
+          local label="$1" endpoint="$2" key="$3" secret="$4" region="$5"
+          echo "::group::Upload to ${label}"
+          AWS_ACCESS_KEY_ID="$key" \
+          AWS_SECRET_ACCESS_KEY="$secret" \
+          AWS_REGION="$region" \
+          aws s3 cp \
+            --recursive --no-progress \
+            --cache-control "public, max-age=31536000, immutable" \
+            --endpoint-url "$endpoint" \
+            "$ARTIFACTS_DIR" "$DEST_PREFIX"
+          echo "::endgroup::"
+        }
+        upload Garage "$GARAGE_ENDPOINT" "$GARAGE_KEY_ID" "$GARAGE_SECRET" "$GARAGE_REGION"
+        upload R2     "$R2_ENDPOINT"     "$R2_KEY_ID"     "$R2_SECRET"     auto
+
+    - name: Sync version to latest/ on Garage and R2
+      if: inputs.also_latest == 'true'
+      shell: bash
+      env:
+        SRC: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/${{ inputs.version }}/
+        DST: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/latest/
+        GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
+        GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
+        GARAGE_SECRET: ${{ inputs.garage_secret }}
+        GARAGE_REGION: ${{ inputs.garage_region }}
+        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
+        R2_KEY_ID: ${{ inputs.r2_key_id }}
+        R2_SECRET: ${{ inputs.r2_secret }}
+      run: |
+        set -euo pipefail
+        sync_latest() {
+          local label="$1" endpoint="$2" key="$3" secret="$4" region="$5"
+          echo "::group::Sync latest/ on ${label}"
+          AWS_ACCESS_KEY_ID="$key" \
+          AWS_SECRET_ACCESS_KEY="$secret" \
+          AWS_REGION="$region" \
+          aws s3 sync \
+            --delete --no-progress \
+            --cache-control "public, max-age=300" \
+            --metadata-directive REPLACE \
+            --endpoint-url "$endpoint" \
+            "$SRC" "$DST"
+          echo "::endgroup::"
+        }
+        sync_latest Garage "$GARAGE_ENDPOINT" "$GARAGE_KEY_ID" "$GARAGE_SECRET" "$GARAGE_REGION"
+        sync_latest R2     "$R2_ENDPOINT"     "$R2_KEY_ID"     "$R2_SECRET"     auto
