@@ -1,0 +1,392 @@
+name: Reusable build libguestfs image
+
+# Reusable workflow consumed by repos that build their image via libguestfs
+# (virt-customize / virt-sysprep / virt-sparsify). The build runs inside a
+# stackopshq/libguestfs-tools container, on a self-hosted runner with
+# /dev/kvm exposed (nested virtualization required by the libguestfs
+# appliance for acceptable performance).
+#
+# Before the build, a dedicated verify-builder job checks that the
+# build_container image was signed by the stackopshq CI via cosign keyless
+# (Sigstore). If verification fails, the build is aborted before any side
+# effect.
+
+on:
+  workflow_call:
+    inputs:
+      os_name:
+        description: 'OS / repo slug used as bucket prefix (e.g., "alpaquita-linux").'
+        type: string
+        required: true
+      version:
+        description: 'Version string. Defaults to github.ref_name with leading "v" stripped.'
+        type: string
+        required: false
+        default: ''
+      output_filename:
+        description: 'Final qcow2 filename. The token {version} is substituted.'
+        type: string
+        required: true
+      upstream_url:
+        description: 'URL of the base image to download. The token {version} is substituted.'
+        type: string
+        required: true
+      decompress:
+        description: 'Decompression to apply to the downloaded base: none|xz|gz|zst|bz2.'
+        type: string
+        required: false
+        default: 'none'
+      customize_script:
+        description: 'Path (relative to caller repo) to the script invoked as: bash <script> <qcow2-path>.'
+        type: string
+        required: false
+        default: 'build/customize.sh'
+      run_sysprep:
+        description: 'Whether to run virt-sysprep before sparsify.'
+        type: boolean
+        default: true
+      sparsify_compress:
+        description: 'Whether virt-sparsify should produce a compressed qcow2.'
+        type: boolean
+        default: true
+      runner_labels:
+        description: 'JSON array of self-hosted runner labels (default: KVM-capable Linux runners).'
+        type: string
+        default: '["self-hosted","Linux","kvm"]'
+      build_container:
+        description: 'OCI image providing libguestfs tools, qemu-img, jq, curl. Must be signed via cosign keyless.'
+        type: string
+        default: 'ghcr.io/stackopshq/libguestfs-tools:v2'
+      builder_cert_identity:
+        description: 'Cosign --certificate-identity-regexp to verify the build_container signature against. Override if you fork the builder image to a different repo.'
+        type: string
+        default: '^https://github.com/stackopshq/libguestfs-tools-container/'
+      builder_oidc_issuer:
+        description: 'Cosign --certificate-oidc-issuer (GitHub Actions OIDC by default).'
+        type: string
+        default: 'https://token.actions.githubusercontent.com'
+      verify_builder:
+        description: 'Whether to verify the build_container cosign signature before pull. Disable only for local testing.'
+        type: boolean
+        default: true
+      bucket_name:
+        description: 'Bucket name on Garage and R2 (must match between backends).'
+        type: string
+        default: 'oic-images'
+      sign:
+        description: 'Whether to cosign sign-blob the final qcow2 (keyless, GitHub OIDC).'
+        type: boolean
+        default: true
+      publish:
+        description: 'If false, skip upload + CF purge (dry-run useful for PR validation).'
+        type: boolean
+        default: true
+      sync_latest:
+        description: 'Whether to mirror this version to <os_name>/latest/.'
+        type: boolean
+        default: true
+      cf_public_hostname:
+        description: 'Public hostname served by Cloudflare (for purge URL composition).'
+        type: string
+        default: 'images.openimages.cloud'
+      shared_actions_ref:
+        description: 'Ref of open-img-cloud/.github to checkout for shared composite actions.'
+        type: string
+        default: 'main'
+
+    secrets:
+      S3_GARAGE_ENDPOINT:
+        required: true
+      S3_GARAGE_KEY_ID:
+        required: true
+      S3_GARAGE_SECRET:
+        required: true
+      R2_ENDPOINT:
+        required: true
+      R2_KEY_ID:
+        required: true
+      R2_SECRET:
+        required: true
+      CF_ZONE_ID:
+        required: true
+      CF_API_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless via GitHub OIDC
+
+jobs:
+  verify-builder:
+    name: Verify builder image signature
+    if: ${{ inputs.verify_builder }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      digest: ${{ steps.verify.outputs.digest }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3
+
+      - name: Verify cosign keyless signature
+        id: verify
+        env:
+          IMAGE: ${{ inputs.build_container }}
+          CERT_IDENTITY_REGEXP: ${{ inputs.builder_cert_identity }}
+          OIDC_ISSUER: ${{ inputs.builder_oidc_issuer }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `cosign verify --output json` prints an array of verified payloads;
+          # critical.image."docker-manifest-digest" is the resolved manifest digest.
+          json=$(cosign verify "$IMAGE" \
+            --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer     "$OIDC_ISSUER" \
+            --output json)
+          echo "::group::Cosign verification payloads"
+          echo "$json" | jq .
+          echo "::endgroup::"
+          digest=$(echo "$json" | jq -r '.[0].critical.image."docker-manifest-digest"')
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "::error::Could not extract digest from cosign output."
+            exit 1
+          fi
+          echo "Verified $IMAGE @ $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
+    needs: verify-builder
+    # If verify_builder is false, the verify-builder job is skipped; this `if`
+    # ensures the build still runs in that case (skipped needs() are fatal otherwise).
+    if: ${{ always() && (needs.verify-builder.result == 'success' || needs.verify-builder.result == 'skipped') }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    container:
+      image: ${{ inputs.build_container }}
+      options: --device=/dev/kvm
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      output_filename: ${{ steps.vars.outputs.output_filename }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Checkout shared actions (open-img-cloud/.github)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          repository: open-img-cloud/.github
+          ref: ${{ inputs.shared_actions_ref }}
+          path: .oic-shared
+
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_OUTPUT: ${{ inputs.output_filename }}
+          IN_UPSTREAM: ${{ inputs.upstream_url }}
+        run: |
+          set -euo pipefail
+          version="$IN_VERSION"
+          if [[ -z "$version" ]]; then
+            ref="${GITHUB_REF_NAME:-}"
+            version="${ref#v}"
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not determine version (no input, no tag ref)."
+            exit 1
+          fi
+          output_filename="${IN_OUTPUT//\{version\}/$version}"
+          upstream_url="${IN_UPSTREAM//\{version\}/$version}"
+          {
+            echo "version=$version"
+            echo "output_filename=$output_filename"
+            echo "upstream_url=$upstream_url"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: version=$version output=$output_filename"
+
+      - name: Prepare build directories
+        shell: bash
+        run: mkdir -p build/work build/output
+
+      - name: Download upstream base image
+        shell: bash
+        env:
+          UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
+        run: |
+          set -euo pipefail
+          echo "Fetching $UPSTREAM_URL"
+          curl -fL --retry 3 --retry-delay 5 -o build/work/base "$UPSTREAM_URL"
+          ls -lh build/work/base
+
+      - name: Decompress base if needed
+        shell: bash
+        env:
+          MODE: ${{ inputs.decompress }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            none) mv build/work/base build/work/working.qcow2 ;;
+            xz)   xz   -dc build/work/base > build/work/working.qcow2 && rm build/work/base ;;
+            gz)   gunzip -c build/work/base > build/work/working.qcow2 && rm build/work/base ;;
+            zst)  zstd -dc build/work/base > build/work/working.qcow2 && rm build/work/base ;;
+            bz2)  bzcat   build/work/base > build/work/working.qcow2 && rm build/work/base ;;
+            *)    echo "::error::unknown decompress mode: $MODE"; exit 1 ;;
+          esac
+          qemu-img info build/work/working.qcow2
+
+      - name: Run caller customize script
+        shell: bash
+        env:
+          CUSTOMIZE_SCRIPT: ${{ inputs.customize_script }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$CUSTOMIZE_SCRIPT" ]]; then
+            echo "::error::customize_script not found: $CUSTOMIZE_SCRIPT"
+            exit 1
+          fi
+          chmod +x "$CUSTOMIZE_SCRIPT"
+          bash "$CUSTOMIZE_SCRIPT" "$(pwd)/build/work/working.qcow2"
+
+      - name: virt-sysprep
+        if: ${{ inputs.run_sysprep }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          virt-sysprep -a build/work/working.qcow2 \
+            --enable bash-history,logfiles,machine-id,ssh-hostkeys,ssh-userdir,tmp-files,udev-persistent-net,utmp,yum-uuid
+
+      - name: virt-sparsify
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          DO_COMPRESS: ${{ inputs.sparsify_compress }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          flags=()
+          if [[ "$DO_COMPRESS" == "true" ]]; then
+            flags+=(--compress)
+          fi
+          virt-sparsify "${flags[@]}" build/work/working.qcow2 "$out"
+          rm -f build/work/working.qcow2
+          ls -lh "$out"
+
+      - name: Generate checksums
+        id: checksum
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
+          sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
+          md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
+          sha256sum "$OUTPUT_FILENAME" > SHA256SUMS
+          sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "SHA256: $sha"
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3
+
+      - name: Cosign sign-blob (keyless)
+        if: ${{ inputs.sign }}
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cd build/output
+          cosign sign-blob "$OUTPUT_FILENAME" \
+            --output-signature "${OUTPUT_FILENAME}.sig" \
+            --output-certificate "${OUTPUT_FILENAME}.cert" \
+            --yes
+
+      - name: Generate MANIFEST.json
+        shell: bash
+        env:
+          OS_NAME: ${{ inputs.os_name }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+          UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
+          SIGNED: ${{ inputs.sign }}
+          BUILDER_IMAGE: ${{ inputs.build_container }}
+          BUILDER_DIGEST: ${{ needs.verify-builder.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          jq -n \
+            --arg name             "$OS_NAME" \
+            --arg version          "$VERSION" \
+            --arg filename         "$OUTPUT_FILENAME" \
+            --arg sha256           "$SHA256" \
+            --arg upstream         "$UPSTREAM_URL" \
+            --arg built_at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit           "${GITHUB_SHA}" \
+            --arg run_url          "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg builder_image    "$BUILDER_IMAGE" \
+            --arg builder_digest   "$BUILDER_DIGEST" \
+            --argjson signed       "${SIGNED}" \
+            '{
+              name: $name,
+              version: $version,
+              format: "qcow2",
+              filename: $filename,
+              sha256: $sha256,
+              upstream_url: $upstream,
+              built_at: $built_at,
+              commit: $commit,
+              build_url: $run_url,
+              builder: {
+                image: $builder_image,
+                digest: $builder_digest
+              },
+              signed: $signed,
+              signature: (if $signed then ($filename + ".sig") else null end),
+              certificate: (if $signed then ($filename + ".cert") else null end)
+            }' > MANIFEST.json
+          cat MANIFEST.json
+
+      - name: Publish to Garage and R2
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/publish-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          artifacts_dir: build/output
+          bucket_name: ${{ inputs.bucket_name }}
+          also_latest: ${{ inputs.sync_latest }}
+          garage_endpoint: ${{ secrets.S3_GARAGE_ENDPOINT }}
+          garage_key_id: ${{ secrets.S3_GARAGE_KEY_ID }}
+          garage_secret: ${{ secrets.S3_GARAGE_SECRET }}
+          r2_endpoint: ${{ secrets.R2_ENDPOINT }}
+          r2_key_id: ${{ secrets.R2_KEY_ID }}
+          r2_secret: ${{ secrets.R2_SECRET }}
+
+      - name: Purge Cloudflare cache for latest/ and indexes
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        uses: ./.oic-shared/actions/cf-purge
+        with:
+          zone_id: ${{ secrets.CF_ZONE_ID }}
+          api_token: ${{ secrets.CF_API_TOKEN }}
+          paths: |
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/index.html
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/MANIFEST.json
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/SHA256SUMS
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/${{ steps.vars.outputs.output_filename }}
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/
+
+      - name: Upload artifacts (CI debugging, 7-day retention)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          path: build/output/
+          retention-days: 7
+          if-no-files-found: warn

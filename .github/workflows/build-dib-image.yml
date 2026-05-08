@@ -1,0 +1,319 @@
+name: Reusable build diskimage-builder image
+
+# Reusable workflow consumed by repos that build their image via OpenStack
+# diskimage-builder (DIB) — currently: octavia-amphora.
+#
+# Caller is expected to clone the upstream project and provide a DIB invocation
+# script that installs diskimage-builder (typically into a Python venv) and
+# runs `disk-image-create`. The script receives the output dir as $1 and the
+# version as $2 and must produce $1/<output_filename>.
+#
+# As with the libguestfs workflow, the build runs inside a stackopshq image,
+# on a self-hosted runner with /dev/kvm. A dedicated verify-builder job
+# checks the cosign keyless signature before the build is allowed to start.
+#
+# DIB needs --privileged for loopback mounts / chroots / mkfs. This is
+# intentional — strip it only if you've migrated to a fully containerized
+# build path that doesn't need root capabilities on the host.
+
+on:
+  workflow_call:
+    inputs:
+      os_name:
+        description: 'OS / repo slug used as bucket prefix.'
+        type: string
+        required: true
+      version:
+        description: 'Version string. Defaults to github.ref_name.'
+        type: string
+        required: false
+        default: ''
+      output_filename:
+        description: 'Final qcow2 filename. The token {version} is substituted.'
+        type: string
+        required: true
+      build_script:
+        description: 'Path to caller script. Receives output dir as $1 and version as $2; must produce $1/<output_filename>.'
+        type: string
+        required: false
+        default: 'build/dib-build.sh'
+      runner_labels:
+        type: string
+        default: '["self-hosted","Linux","kvm"]'
+      build_container:
+        description: 'OCI image with python venv, qemu-img, libguestfs, DIB deps installable. Must be cosign-signed.'
+        type: string
+        default: 'ghcr.io/stackopshq/libguestfs-tools:v2'
+      builder_cert_identity:
+        description: 'Cosign --certificate-identity-regexp to verify the build_container signature against.'
+        type: string
+        default: '^https://github.com/stackopshq/libguestfs-tools-container/'
+      builder_oidc_issuer:
+        description: 'Cosign --certificate-oidc-issuer.'
+        type: string
+        default: 'https://token.actions.githubusercontent.com'
+      verify_builder:
+        description: 'Whether to verify the build_container cosign signature before pull.'
+        type: boolean
+        default: true
+      bucket_name:
+        type: string
+        default: 'oic-images'
+      sign:
+        type: boolean
+        default: true
+      publish:
+        type: boolean
+        default: true
+      sync_latest:
+        type: boolean
+        default: true
+      cf_public_hostname:
+        type: string
+        default: 'images.openimages.cloud'
+      shared_actions_ref:
+        type: string
+        default: 'main'
+
+    secrets:
+      S3_GARAGE_ENDPOINT: { required: true }
+      S3_GARAGE_KEY_ID:   { required: true }
+      S3_GARAGE_SECRET:   { required: true }
+      R2_ENDPOINT:        { required: true }
+      R2_KEY_ID:          { required: true }
+      R2_SECRET:          { required: true }
+      CF_ZONE_ID:         { required: true }
+      CF_API_TOKEN:       { required: true }
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless via GitHub OIDC
+
+jobs:
+  verify-builder:
+    name: Verify builder image signature
+    if: ${{ inputs.verify_builder }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      digest: ${{ steps.verify.outputs.digest }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3
+
+      - name: Verify cosign keyless signature
+        id: verify
+        env:
+          IMAGE: ${{ inputs.build_container }}
+          CERT_IDENTITY_REGEXP: ${{ inputs.builder_cert_identity }}
+          OIDC_ISSUER: ${{ inputs.builder_oidc_issuer }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          json=$(cosign verify "$IMAGE" \
+            --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer     "$OIDC_ISSUER" \
+            --output json)
+          echo "::group::Cosign verification payloads"
+          echo "$json" | jq .
+          echo "::endgroup::"
+          digest=$(echo "$json" | jq -r '.[0].critical.image."docker-manifest-digest"')
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "::error::Could not extract digest from cosign output."
+            exit 1
+          fi
+          echo "Verified $IMAGE @ $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (DIB) ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
+    needs: verify-builder
+    if: ${{ always() && (needs.verify-builder.result == 'success' || needs.verify-builder.result == 'skipped') }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    container:
+      image: ${{ inputs.build_container }}
+      # --privileged required for DIB's loop mounts / chroot / mkfs.
+      options: --device=/dev/kvm --privileged
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      output_filename: ${{ steps.vars.outputs.output_filename }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Checkout shared actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          repository: open-img-cloud/.github
+          ref: ${{ inputs.shared_actions_ref }}
+          path: .oic-shared
+
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_OUTPUT: ${{ inputs.output_filename }}
+        run: |
+          set -euo pipefail
+          version="$IN_VERSION"
+          if [[ -z "$version" ]]; then
+            version="${GITHUB_REF_NAME:-}"
+            version="${version#v}"
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not determine version."
+            exit 1
+          fi
+          output_filename="${IN_OUTPUT//\{version\}/$version}"
+          {
+            echo "version=$version"
+            echo "output_filename=$output_filename"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build directory
+        shell: bash
+        run: mkdir -p build/output
+
+      - name: Run caller DIB build script
+        shell: bash
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$BUILD_SCRIPT" ]]; then
+            echo "::error::build_script not found: $BUILD_SCRIPT"
+            exit 1
+          fi
+          chmod +x "$BUILD_SCRIPT"
+          bash "$BUILD_SCRIPT" "$(pwd)/build/output" "$VERSION"
+
+      - name: Verify output exists
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          if [[ ! -f "$out" ]]; then
+            echo "::error::Expected output not produced: $out"
+            ls -la build/output/
+            exit 1
+          fi
+          ls -lh "$out"
+
+      - name: Generate checksums
+        id: checksum
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
+          sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
+          md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
+          sha256sum "$OUTPUT_FILENAME" > SHA256SUMS
+          sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3
+
+      - name: Cosign sign-blob (keyless)
+        if: ${{ inputs.sign }}
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cd build/output
+          cosign sign-blob "$OUTPUT_FILENAME" \
+            --output-signature "${OUTPUT_FILENAME}.sig" \
+            --output-certificate "${OUTPUT_FILENAME}.cert" \
+            --yes
+
+      - name: Generate MANIFEST.json
+        shell: bash
+        env:
+          OS_NAME: ${{ inputs.os_name }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+          SIGNED: ${{ inputs.sign }}
+          BUILDER_IMAGE: ${{ inputs.build_container }}
+          BUILDER_DIGEST: ${{ needs.verify-builder.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          jq -n \
+            --arg name             "$OS_NAME" \
+            --arg version          "$VERSION" \
+            --arg filename         "$OUTPUT_FILENAME" \
+            --arg sha256           "$SHA256" \
+            --arg built_at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit           "${GITHUB_SHA}" \
+            --arg run_url          "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg builder_image    "$BUILDER_IMAGE" \
+            --arg builder_digest   "$BUILDER_DIGEST" \
+            --argjson signed       "${SIGNED}" \
+            '{
+              name: $name,
+              version: $version,
+              format: "qcow2",
+              filename: $filename,
+              sha256: $sha256,
+              built_at: $built_at,
+              commit: $commit,
+              build_url: $run_url,
+              builder_tool: "diskimage-builder",
+              builder: {
+                image: $builder_image,
+                digest: $builder_digest
+              },
+              signed: $signed,
+              signature: (if $signed then ($filename + ".sig") else null end),
+              certificate: (if $signed then ($filename + ".cert") else null end)
+            }' > MANIFEST.json
+
+      - name: Publish to Garage and R2
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/publish-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          artifacts_dir: build/output
+          bucket_name: ${{ inputs.bucket_name }}
+          also_latest: ${{ inputs.sync_latest }}
+          garage_endpoint: ${{ secrets.S3_GARAGE_ENDPOINT }}
+          garage_key_id: ${{ secrets.S3_GARAGE_KEY_ID }}
+          garage_secret: ${{ secrets.S3_GARAGE_SECRET }}
+          r2_endpoint: ${{ secrets.R2_ENDPOINT }}
+          r2_key_id: ${{ secrets.R2_KEY_ID }}
+          r2_secret: ${{ secrets.R2_SECRET }}
+
+      - name: Purge Cloudflare cache for latest/
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        uses: ./.oic-shared/actions/cf-purge
+        with:
+          zone_id: ${{ secrets.CF_ZONE_ID }}
+          api_token: ${{ secrets.CF_API_TOKEN }}
+          paths: |
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/index.html
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/MANIFEST.json
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/SHA256SUMS
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/${{ steps.vars.outputs.output_filename }}
+            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/
+
+      - name: Upload artifacts (CI debugging)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          path: build/output/
+          retention-days: 7
+          if-no-files-found: warn
