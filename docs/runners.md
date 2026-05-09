@@ -257,29 +257,138 @@ podman run --rm --device=/dev/kvm ghcr.io/stackopshq/libguestfs-tools:2 \
 
 ## 8. Hardening
 
-Highly recommended additions, especially for runners that build images
-later promoted to production:
+These are the hardenings actually applied to the production runners
+(`gh-runner-1`, `gh-runner-2`). Reproduce them on every new runner.
 
-- **Restrict the runner to specific repos**: in the org runner group
-  settings, scope to `Selected repositories` (not "All repositories"); list
-  only the image repos consumed by the build workflow. This prevents
-  unrelated PRs from grabbing your KVM-capable runners.
-- **Disable workflow access from forks**: in `Actions → General → Fork
-  pull request workflows from outside collaborators`, require approval
-  before any fork PR can run on these runners. They have access to your
+### 8.1 Scoped runner group (`image-builders`)
+
+Default runner groups expose runners to **all** repos in the org. We
+restrict to image build repos only via a dedicated group `image-builders`,
+visibility `selected`, listing the consumer repos by ID. Fork PRs from
+outside collaborators on those repos require manual approval (set in
+`Settings → Actions → General → Require approval for outside collaborators`).
+
+Create / update the group via API (one-time, admin:org):
+
+```sh
+gh api -X POST /orgs/open-img-cloud/actions/runner-groups \
+  --input - <<'EOF'
+{
+  "name": "image-builders",
+  "visibility": "selected",
+  "selected_repository_ids": [<repo_id_1>, <repo_id_2>, ...],
+  "allows_public_repositories": true,
+  "restricted_to_workflows": false
+}
+EOF
+```
+
+Move runners into the group (`<runner_id>` from `gh api /orgs/.../actions/runners`):
+
+```sh
+gh api -X PUT /orgs/open-img-cloud/actions/runner-groups/<group_id>/runners/<runner_id>
+```
+
+When registering a new runner, pass `--runnergroup image-builders` to
+`config.sh` (already in step 5).
+
+### 8.2 Ephemeral runners
+
+Each runner process exits after a single job. systemd restarts the
+service, which re-uses the persisted runner credentials and reconnects
+to the org as the same agent. No inter-job state contamination, no
+runner-agent leftovers from previous jobs.
+
+Register with `--ephemeral`:
+
+```sh
+sudo -u gh-runner ./config.sh \
+    --url https://github.com/open-img-cloud \
+    --token <REGISTRATION_TOKEN> \
+    --name "$(hostname -s)" \
+    --labels "self-hosted,Linux,kvm" \
+    --runnergroup image-builders \
+    --ephemeral \
+    --work _work \
+    --unattended
+```
+
+Add a systemd drop-in so the service restarts after each job exit:
+
+```sh
+sudo mkdir -p /etc/systemd/system/actions.runner.open-img-cloud.$(hostname -s).service.d
+sudo tee /etc/systemd/system/actions.runner.open-img-cloud.$(hostname -s).service.d/restart.conf <<EOF
+[Service]
+Restart=always
+RestartSec=10
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart actions.runner.open-img-cloud.$(hostname -s).service
+```
+
+Verify with `sudo systemctl status actions.runner.open-img-cloud.<host>.service`
+— the output should show the `Drop-In:` block referencing `restart.conf`.
+
+### 8.3 Weekly podman storage GC
+
+Each unique builder image version pulled stays on disk indefinitely.
+Without cleanup, runners accumulate gigabytes over time. A weekly
+systemd timer prunes images that haven't been used for 7+ days while
+preserving the currently-active image.
+
+```sh
+sudo loginctl enable-linger gh-runner   # rootless podman session persistence
+
+sudo tee /etc/systemd/system/podman-prune.service <<'EOF'
+[Unit]
+Description=Weekly podman GC (gh-runner)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/runuser -l gh-runner -c '/usr/bin/podman system prune -af --filter until=168h'
+EOF
+
+sudo tee /etc/systemd/system/podman-prune.timer <<'EOF'
+[Unit]
+Description=Weekly podman GC (Sun 03:00 + jitter)
+
+[Timer]
+OnCalendar=Sun 03:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now podman-prune.timer
+sudo systemctl list-timers podman-prune.timer
+```
+
+The `RandomizedDelaySec=30min` jitters runners apart so they don't all
+GC simultaneously. `Persistent=true` runs a missed timer at next boot
+(useful if the runner host was offline at 03:00 Sunday).
+
+### 8.4 Other recommended toggles
+
+- **Disable workflow access from forks**: in `Settings → Actions → General
+  → Fork pull request workflows from outside collaborators`, require
+  approval before any fork PR can run. The runners have access to your
   Cloudflare and S3 secrets via `secrets: inherit`.
-- **Auto-update the runner**: keep the runner version current. The runner
-  agent self-updates by default unless `--disableupdate` was passed.
-- **Ephemeral mode**: pass `--ephemeral` to `config.sh` to make the runner
-  process exit after one job. Combined with a systemd `Restart=always`
-  drop-in, this gives single-use runners (no inter-job state contamination).
-  Trade-off: ~30 s extra startup per job.
-- **podman storage quota**: long-running builders accumulate layers. Add a
-  weekly `podman system prune -af` cron under the `gh-runner` user.
+- **Runner auto-update**: keep the runner version current. The agent
+  self-updates by default unless `--disableupdate` was passed at config
+  time. After a self-update, `runsvc.sh` and `externals/node*/bin/*` get
+  re-extracted and **lose their `bin_t` SELinux label** — but the
+  persistent `semanage fcontext` rules from §3.1 mean a `restorecon`
+  reapplies them automatically. Run a final `restorecon -RFv` after any
+  manual `config.sh` re-run to be safe.
 - **Network egress filtering**: if the host is behind a firewall, allow
   outbound to: `api.github.com`, `*.actions.githubusercontent.com`,
-  `objects.githubusercontent.com`, `ghcr.io`, `quay.io`, `fulcio.sigstore.dev`,
-  `rekor.sigstore.dev`, plus your Garage and R2 endpoints.
+  `objects.githubusercontent.com`, `ghcr.io`, `quay.io`,
+  `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus your Garage and R2
+  endpoints.
 
 ## 9. Common failures
 
