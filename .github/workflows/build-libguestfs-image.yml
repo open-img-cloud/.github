@@ -386,12 +386,14 @@ jobs:
             "name": "smoke-test"
           }
           EOF
-          # `lock_passwd: false` is required on Alpine/Alpaquita: with the
-          # default `lock_passwd: true`, cloud-init writes `!` in /etc/shadow,
-          # and Alpine's PAM stack (UsePAM yes by default in sshd) then
-          # rejects the login even with a valid SSH key. The upstream
-          # alpaquita cloud.cfg sets the same on its default user for the
-          # same reason.
+          # On Alpine/Alpaquita, cloud-init writes `!` to /etc/shadow for
+          # newly-created users even when `lock_passwd: false` is set
+          # (verified empirically: post-mortem run #8 showed
+          # `smoketest:!:...`). Alpine's PAM stack then refuses key-based
+          # SSH because pam_unix's account check rejects `!`-locked
+          # accounts. Set an actual password hash via `plain_text_passwd`
+          # so cloud-init writes a real hash through chpasswd and PAM
+          # accepts the account.
           cat > "$work/seed/openstack/latest/user_data" <<EOF
           #cloud-config
           users:
@@ -400,8 +402,12 @@ jobs:
               sudo: ["ALL=(ALL) NOPASSWD:ALL"]
               shell: /bin/ash
               lock_passwd: false
+              plain_text_passwd: smoketest
               ssh_authorized_keys:
                 - $pubkey
+          chpasswd:
+            expire: false
+          ssh_pwauth: false
           write_files:
             - path: /etc/cloud-init-smoke-ok
               content: "smoke\n"
@@ -534,22 +540,45 @@ jobs:
             # line, so a `<<'EOF'` terminator inside this block can't sit
             # at column 0 without breaking the YAML, and a heredoc's
             # terminator MUST be at column 0 (or use `<<-` with TABs).
-            printf '%s\n' \
-              'll /home' \
-              'll /home/smoketest' \
-              'll /home/smoketest/.ssh' \
-              'cat /home/smoketest/.ssh/authorized_keys' \
-              'cat /etc/passwd' \
-              'cat /etc/shadow' \
-              'cat /etc/ssh/sshd_config' \
-              'ls /etc/ssh/sshd_config.d' \
-              'find /etc/ssh/sshd_config.d -type f' \
-              'cat /etc/pam.d/sshd' \
-              'cat /etc/pam.d/base-auth' \
-              'cat /etc/pam.d/base-account' \
-              'tail-n 100 /var/log/cloud-init.log' \
-              'tail-n 100 /var/log/cloud-init-output.log' \
-              | guestfish --ro -a "$work/overlay.qcow2" -i 2>&1 || true
+            # virt-copy-out is more ergonomic than guestfish for
+            # multi-file inspection: it just dumps the requested files to
+            # a host directory we can grep/cat normally.
+            mkdir -p "$work/postmortem"
+            virt-copy-out -a "$work/overlay.qcow2" \
+              /etc/passwd \
+              /etc/shadow \
+              /etc/ssh/sshd_config \
+              /etc/ssh/sshd_config.d \
+              /etc/pam.d \
+              /home/smoketest \
+              /var/log/cloud-init.log \
+              /var/log/cloud-init-output.log \
+              "$work/postmortem" 2>&1 || true
+            echo "--- /home/smoketest tree ---"
+            ls -laR "$work/postmortem/smoketest" 2>&1 || true
+            echo "--- authorized_keys ---"
+            cat "$work/postmortem/smoketest/.ssh/authorized_keys" 2>&1 || true
+            echo "--- /etc/passwd (smoketest line) ---"
+            grep '^smoketest:' "$work/postmortem/passwd" 2>&1 || true
+            echo "--- /etc/shadow (smoketest line) ---"
+            grep '^smoketest:' "$work/postmortem/shadow" 2>&1 || true
+            echo "--- /etc/ssh/sshd_config.d/ ---"
+            ls -la "$work/postmortem/sshd_config.d/" 2>&1 || true
+            for f in "$work/postmortem/sshd_config.d/"*; do
+              [[ -e "$f" ]] || continue
+              echo "=== $f ==="
+              cat "$f" 2>&1 || true
+            done
+            echo "--- /etc/pam.d/sshd ---"
+            cat "$work/postmortem/pam.d/sshd" 2>&1 || true
+            echo "--- /etc/pam.d/base-auth ---"
+            cat "$work/postmortem/pam.d/base-auth" 2>&1 || true
+            echo "--- /etc/pam.d/base-account ---"
+            cat "$work/postmortem/pam.d/base-account" 2>&1 || true
+            echo "--- cloud-init.log (last 80 lines) ---"
+            tail -n 80 "$work/postmortem/cloud-init.log" 2>&1 || true
+            echo "--- cloud-init-output.log (last 60 lines) ---"
+            tail -n 60 "$work/postmortem/cloud-init-output.log" 2>&1 || true
             echo "::endgroup::"
             exit 1
           fi
