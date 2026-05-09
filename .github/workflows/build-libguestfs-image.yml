@@ -50,13 +50,13 @@ on:
         type: boolean
         default: true
       smoke_test:
-        description: 'Whether to boot the produced qcow2 in qemu with a NoCloud seed and verify cloud-init runs end-to-end. Catches regressions in cloud-init / grub / sysprep BEFORE publish. Adds ~1-2 min to the build job.'
+        description: 'Whether to boot the produced qcow2 in qemu with a ConfigDrive seed and verify cloud-init runs end-to-end. Catches regressions in cloud-init / grub / sysprep BEFORE publish. Adds ~1-2 min to the build job.'
         type: boolean
         default: true
       smoke_test_timeout_seconds:
-        description: 'Hard cap on the smoke-test wait loop (default 300s = 5 min). Bump for slow guests.'
+        description: 'Hard cap on the smoke-test wait loop (default 420s = 7 min). Bump for slow guests.'
         type: number
-        default: 300
+        default: 420
       runner_labels:
         description: 'JSON array of self-hosted runner labels (default: KVM-capable Linux runners).'
         type: string
@@ -441,8 +441,12 @@ jobs:
           fi
           echo "Using qemu binary: $qemu_bin"
 
+          # `-machine q35,accel=kvm`: pin to the modern q35 chipset (PCIe,
+          # AHCI) instead of the deprecated default `pc-i440fx-<rhel>` machine
+          # type, which qemu-kvm warns about on each boot.
           "$qemu_bin" \
-            -enable-kvm -cpu host \
+            -machine q35,accel=kvm \
+            -cpu host \
             -m 1024 -smp 2 \
             -nographic \
             -drive file="$work/overlay.qcow2",format=qcow2,if=virtio \
@@ -454,20 +458,47 @@ jobs:
             -daemonize -pidfile "$work/qemu.pid"
 
           # 5. Wait until SSH answers with the marker file.
+          # Two-phase loop so failures tell us *where* it broke:
+          #   Phase A — wait for the host port-forward to even accept a TCP
+          #             handshake (proves qemu is alive and the guest sshd
+          #             is listening on :22).
+          #   Phase B — wait for the cloud-init marker file via SSH (proves
+          #             the user-data was actually applied).
           ssh_opts="-i $work/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR -p 2222 smoketest@127.0.0.1"
           deadline=$((SECONDS + TIMEOUT_S))
-          ok=0
+          phase="port"   # one of: port, marker
+          tcp_ok=0
+          marker_ok=0
           while (( SECONDS < deadline )); do
-            if marker=$(ssh $ssh_opts 'cat /etc/cloud-init-smoke-ok' 2>/dev/null) && [[ "$marker" == "smoke" ]]; then
-              ok=1
-              break
+            if [[ "$phase" == "port" ]]; then
+              # bash /dev/tcp probe: opens then closes a TCP connection.
+              if (exec 9<>/dev/tcp/127.0.0.1/2222) 2>/dev/null; then
+                exec 9<&- 9>&- 2>/dev/null || true
+                echo "Smoke phase A: TCP 127.0.0.1:2222 is up at +$((SECONDS))s"
+                tcp_ok=1
+                phase="marker"
+              fi
+            else
+              if marker=$(ssh $ssh_opts 'cat /etc/cloud-init-smoke-ok' 2>/dev/null) && [[ "$marker" == "smoke" ]]; then
+                echo "Smoke phase B: cloud-init marker present at +$((SECONDS))s"
+                marker_ok=1
+                break
+              fi
             fi
             sleep 5
           done
-          if [[ "$ok" -ne 1 ]]; then
-            echo "::error::Smoke test timed out after ${TIMEOUT_S}s — guest did not boot or cloud-init did not apply user-data"
-            echo "::group::serial.log (last 100 lines)"
-            tail -n 100 "$work/serial.log" || true
+          if [[ "$marker_ok" -ne 1 ]]; then
+            if [[ "$tcp_ok" -ne 1 ]]; then
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — TCP 127.0.0.1:2222 never opened (guest did not boot, or sshd not listening, or networking down)"
+            else
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (cloud-init did not apply user-data)"
+            fi
+            echo "::group::serial.log (last 500 lines)"
+            tail -n 500 "$work/serial.log" || true
+            echo "::endgroup::"
+            echo "::group::serial.log (full, ${work}/serial.log)"
+            wc -l "$work/serial.log" || true
+            cat "$work/serial.log" || true
             echo "::endgroup::"
             exit 1
           fi
