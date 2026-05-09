@@ -457,11 +457,41 @@ jobs:
           # `-machine q35,accel=kvm`: pin to the modern q35 chipset (PCIe,
           # AHCI) instead of the deprecated default `pc-i440fx-<rhel>` machine
           # type, which qemu-kvm warns about on each boot.
+          #
+          # Boot firmware: BIOS by default (SeaBIOS, baked into qemu). For
+          # UEFI variants we feed OVMF as pflash. We auto-detect from the
+          # output filename — convention is to embed `uefi` in the name
+          # for UEFI builds (e.g. `alpine-3.23.4-uefi-x86_64.qcow2`).
+          # OVMF_VARS must be writable, so copy the template.
+          fw_args=()
+          if [[ "$out" == *uefi* ]]; then
+            ovmf_code="" ovmf_vars=""
+            for c in /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd; do
+              [[ -f "$c" ]] && { ovmf_code="$c"; break; }
+            done
+            for v in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd; do
+              [[ -f "$v" ]] && { ovmf_vars="$v"; break; }
+            done
+            if [[ -z "$ovmf_code" || -z "$ovmf_vars" ]]; then
+              echo "::error::OVMF firmware not found in builder image (need OVMF_CODE.fd + OVMF_VARS.fd). Install edk2-ovmf in the libguestfs-tools-container."
+              exit 1
+            fi
+            cp "$ovmf_vars" "$work/OVMF_VARS.fd"
+            fw_args=(
+              -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code"
+              -drive "if=pflash,format=raw,file=$work/OVMF_VARS.fd"
+            )
+            echo "Smoke firmware: OVMF (UEFI) — code=$ovmf_code"
+          else
+            echo "Smoke firmware: SeaBIOS (BIOS, default)"
+          fi
+
           "$qemu_bin" \
             -machine q35,accel=kvm \
             -cpu host \
             -m 1024 -smp 2 \
             -nographic \
+            "${fw_args[@]}" \
             -drive file="$work/overlay.qcow2",format=qcow2,if=virtio \
             -drive file="$work/seed.img",format=raw,if=virtio,readonly=on \
             -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
@@ -472,22 +502,26 @@ jobs:
 
           # 5. Wait until SSH answers with the marker file.
           # Two-phase loop so failures tell us *where* it broke:
-          #   Phase A — wait for the host port-forward to even accept a TCP
-          #             handshake (proves qemu is alive and the guest sshd
-          #             is listening on :22).
+          #   Phase A — wait for an actual SSH banner (`SSH-...`) on the
+          #             port-forward. A naked TCP-open check false-positives
+          #             on qemu's user-mode SLIRP, which accepts host-side
+          #             connections before the guest is listening.
           #   Phase B — wait for the cloud-init marker file via SSH (proves
           #             the user-data was actually applied).
           ssh_opts="-i $work/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR -p 2222 smoketest@127.0.0.1"
           deadline=$((SECONDS + TIMEOUT_S))
-          phase="port"   # one of: port, marker
+          phase="banner"   # one of: banner, marker
           tcp_ok=0
           marker_ok=0
           while (( SECONDS < deadline )); do
-            if [[ "$phase" == "port" ]]; then
-              # bash /dev/tcp probe: opens then closes a TCP connection.
-              if (exec 9<>/dev/tcp/127.0.0.1/2222) 2>/dev/null; then
-                exec 9<&- 9>&- 2>/dev/null || true
-                echo "Smoke phase A: TCP 127.0.0.1:2222 is up at +$((SECONDS))s"
+            if [[ "$phase" == "banner" ]]; then
+              # Open a TCP connection and read the first line — sshd
+              # advertises `SSH-2.0-OpenSSH_*\r\n` immediately on connect.
+              # `timeout 3` caps the read so we don't block forever on a
+              # half-open SLIRP socket.
+              banner=$(timeout 3 bash -c 'exec 9<>/dev/tcp/127.0.0.1/2222 && head -c 32 <&9' 2>/dev/null || true)
+              if [[ "$banner" == SSH-* ]]; then
+                echo "Smoke phase A: SSH banner received at +$((SECONDS))s — '${banner%%$'\r'*}'"
                 tcp_ok=1
                 phase="marker"
               fi
@@ -502,7 +536,7 @@ jobs:
           done
           if [[ "$marker_ok" -ne 1 ]]; then
             if [[ "$tcp_ok" -ne 1 ]]; then
-              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — TCP 127.0.0.1:2222 never opened (guest did not boot, or sshd not listening, or networking down)"
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — no SSH banner on 127.0.0.1:2222 (guest did not boot, sshd not listening, networking down, or — for UEFI — wrong firmware)"
             else
               echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (SSH auth failed, or cloud-init did not write the marker)"
               # Last-ditch verbose SSH attempt to surface the auth handshake
