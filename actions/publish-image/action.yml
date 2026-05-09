@@ -1,22 +1,27 @@
 name: 'Publish image to Garage and R2'
 description: 'Dual-uploads a directory of artifacts to Garage (source of truth) and R2 (public mirror), generates an HTML index, and optionally syncs the version to the latest/ alias.'
 
+# Bucket model: one bucket per distribution, named after `os_name`. Each bucket
+# must exist on both backends (Garage + R2) before this action runs — the
+# action does not create buckets. Path inside the bucket: `<version>/<filename>`,
+# plus an optional `latest/` mirror.
+
 inputs:
   os_name:
-    description: 'OS / repo slug used as bucket prefix (e.g., "alpaquita-linux").'
+    description: 'OS / repo slug. Also used as the bucket name (e.g., "alpaquita-linux") unless overridden via bucket_name.'
     required: true
   version:
-    description: 'Version string used as second-level path segment.'
+    description: 'Version string used as the path segment under the bucket.'
     required: true
   artifacts_dir:
     description: 'Local directory whose contents will be uploaded.'
     required: true
   bucket_name:
-    description: 'Bucket name on both backends (must match for path consistency).'
+    description: 'Bucket name override. Empty (default) → falls back to os_name. Buckets must exist on both Garage and R2 with the same name.'
     required: false
-    default: 'oic-images'
+    default: ''
   also_latest:
-    description: 'If "true", mirror the version directory under <os_name>/latest/.'
+    description: 'If "true", mirror the version directory under latest/ inside the bucket.'
     required: false
     default: 'true'
 
@@ -40,20 +45,34 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Validate inputs
+    - name: Validate inputs and resolve bucket
+      id: resolve
       shell: bash
+      env:
+        ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+        OS_NAME: ${{ inputs.os_name }}
+        VERSION: ${{ inputs.version }}
+        BUCKET_NAME: ${{ inputs.bucket_name }}
       run: |
         set -euo pipefail
-        if [[ ! -d "${{ inputs.artifacts_dir }}" ]]; then
-          echo "::error::artifacts_dir does not exist: ${{ inputs.artifacts_dir }}"
+        if [[ ! -d "$ARTIFACTS_DIR" ]]; then
+          echo "::error::artifacts_dir does not exist: $ARTIFACTS_DIR"
           exit 1
         fi
-        for v in "${{ inputs.os_name }}" "${{ inputs.version }}"; do
+        for v in "$OS_NAME" "$VERSION"; do
           if [[ -z "$v" || "$v" =~ \.\. || "$v" =~ / ]]; then
             echo "::error::invalid path segment: '$v'"
             exit 1
           fi
         done
+        # Bucket = explicit bucket_name override, else os_name (per-distro bucket model).
+        bucket="${BUCKET_NAME:-$OS_NAME}"
+        if [[ "$bucket" =~ \.\. || "$bucket" =~ / ]]; then
+          echo "::error::invalid bucket name: '$bucket'"
+          exit 1
+        fi
+        echo "Bucket resolved: $bucket"
+        echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
 
     - name: Install aws-cli if missing
       shell: bash
@@ -120,7 +139,7 @@ runs:
       shell: bash
       env:
         ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
-        DEST_PREFIX: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/${{ inputs.version }}/
+        DEST_PREFIX: s3://${{ steps.resolve.outputs.bucket }}/${{ inputs.version }}/
         GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
         GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
         GARAGE_SECRET: ${{ inputs.garage_secret }}
@@ -150,8 +169,8 @@ runs:
       if: inputs.also_latest == 'true'
       shell: bash
       env:
-        SRC: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/${{ inputs.version }}/
-        DST: s3://${{ inputs.bucket_name }}/${{ inputs.os_name }}/latest/
+        SRC: s3://${{ steps.resolve.outputs.bucket }}/${{ inputs.version }}/
+        DST: s3://${{ steps.resolve.outputs.bucket }}/latest/
         GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
         GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
         GARAGE_SECRET: ${{ inputs.garage_secret }}

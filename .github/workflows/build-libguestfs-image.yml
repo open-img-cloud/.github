@@ -70,9 +70,9 @@ on:
         type: boolean
         default: true
       bucket_name:
-        description: 'Bucket name on Garage and R2 (must match between backends).'
+        description: 'Bucket name override on Garage and R2. Empty (default) uses os_name (per-distro bucket model). Buckets must exist on both backends with the same name.'
         type: string
-        default: 'oic-images'
+        default: ''
       sign:
         description: 'Whether to cosign sign-blob the final qcow2 (keyless, GitHub OIDC).'
         type: boolean
