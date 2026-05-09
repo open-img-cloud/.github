@@ -113,13 +113,38 @@ Override it only for staging / QA buckets (e.g.
 Each release publishes alongside the qcow2:
 
 - `<filename>.sha256`, `.sha1`, `.md5` per-file checksums
-- `SHA256SUMS` aggregated checksum file
+- `SHA256SUMS` (or `SHA256SUMS-<variant>` when the caller passes the
+  `variant` input — see "Multi-variant builds" below)
 - `<filename>.bundle` cosign sigstore-bundle (signature + certificate +
   Rekor proof bundled, modern cosign 3.x format)
-- `MANIFEST.json` build metadata, including a `builder` block recording the
-  exact builder image reference and content digest used to produce the qcow2
-  (full chain of custody from base rootfs → published artifact).
+- `MANIFEST.json` (or `MANIFEST-<variant>.json`) build metadata, including
+  a `builder` block recording the exact builder image reference and
+  content digest used to produce the qcow2 (full chain of custody from
+  base rootfs → published artifact).
 - `index.html` static directory listing
+
+## Multi-variant builds (`variant` input)
+
+When a single OS produces multiple binary variants for the same version
+— e.g. Alpaquita's `glibc` + `musl` matrix at the same `2026.04.14` —
+the caller workflow runs the reusable workflow once per variant. Without
+care, the second run would overwrite the first run's `MANIFEST.json`
+and `SHA256SUMS` at the shared bucket path.
+
+Set the `variant` input on the reusable workflow call to the variant
+identifier (`libc`, `arch`, `flavor`, …). When set:
+
+- `MANIFEST.json` becomes `MANIFEST-<variant>.json`
+- `SHA256SUMS` becomes `SHA256SUMS-<variant>`
+- The `MANIFEST` body gains a `"variant": "<variant>"` field
+- Cloudflare cache purge picks up the variant-suffixed names
+
+The qcow2 itself, its checksums (`.sha256`, `.sha1`, `.md5`), and its
+cosign `.bundle` are already uniquely named via `output_filename` and
+don't need per-variant suffixing.
+
+Single-variant repos (most callers) leave `variant` unset and keep the
+unsuffixed `MANIFEST.json` / `SHA256SUMS` names.
 
 End users verify with cosign 3.x:
 

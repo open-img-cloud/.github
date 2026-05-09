@@ -75,6 +75,11 @@ on:
       shared_actions_ref:
         type: string
         default: 'main'
+      variant:
+        description: 'Optional variant identifier when the caller matrix produces multiple builds for the same version. When set, MANIFEST.json and SHA256SUMS get a -<variant> suffix. See build-libguestfs-image.yml for details.'
+        type: string
+        required: false
+        default: ''
 
     # See build-libguestfs-image.yml for rationale: all publish-related secrets
     # are optional; runtime validation in the build job fails fast when
@@ -241,13 +246,18 @@ jobs:
         shell: bash
         env:
           OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
           cd build/output
           sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
           sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
           md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
-          sha256sum "$OUTPUT_FILENAME" > SHA256SUMS
+          sums_filename="SHA256SUMS"
+          if [[ -n "${VARIANT:-}" ]]; then
+            sums_filename="SHA256SUMS-${VARIANT}"
+          fi
+          sha256sum "$OUTPUT_FILENAME" > "$sums_filename"
           sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
 
@@ -280,12 +290,18 @@ jobs:
           SIGNED: ${{ inputs.sign }}
           BUILDER_IMAGE: ${{ inputs.build_container }}
           BUILDER_DIGEST: ${{ needs.verify-builder.outputs.digest }}
+          VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
           cd build/output
+          manifest_filename="MANIFEST.json"
+          if [[ -n "${VARIANT:-}" ]]; then
+            manifest_filename="MANIFEST-${VARIANT}.json"
+          fi
           jq -n \
             --arg name             "$OS_NAME" \
             --arg version          "$VERSION" \
+            --arg variant          "$VARIANT" \
             --arg filename         "$OUTPUT_FILENAME" \
             --arg sha256           "$SHA256" \
             --arg built_at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -297,6 +313,7 @@ jobs:
             '{
               name: $name,
               version: $version,
+              variant: (if $variant == "" then null else $variant end),
               format: "qcow2",
               filename: $filename,
               sha256: $sha256,
@@ -310,7 +327,7 @@ jobs:
               },
               signed: $signed,
               bundle: (if $signed then ($filename + ".bundle") else null end)
-            }' > MANIFEST.json
+            }' > "$manifest_filename"
 
       - name: Publish to Garage and R2
         if: ${{ inputs.publish }}
@@ -328,19 +345,46 @@ jobs:
           r2_key_id: ${{ secrets.R2_KEY_ID }}
           r2_secret: ${{ secrets.R2_SECRET }}
 
+      - name: Compute Cloudflare purge URL list
+        id: purge-paths
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        shell: bash
+        env:
+          HOST: ${{ inputs.cf_public_hostname }}
+          OS_NAME: ${{ inputs.os_name }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          base="https://${HOST}/${OS_NAME}/latest"
+          {
+            echo "${base}/"
+            echo "${base}/index.html"
+            echo "${base}/${OUTPUT_FILENAME}"
+            echo "${base}/${OUTPUT_FILENAME}.bundle"
+            echo "${base}/${OUTPUT_FILENAME}.sha256"
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${base}/MANIFEST-${VARIANT}.json"
+              echo "${base}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${base}/MANIFEST.json"
+              echo "${base}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/"
+          } > /tmp/purge-paths.txt
+          {
+            echo 'paths<<PURGE_EOF'
+            cat /tmp/purge-paths.txt
+            echo 'PURGE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Purge Cloudflare cache for latest/
         if: ${{ inputs.publish && inputs.sync_latest }}
         uses: ./.oic-shared/actions/cf-purge
         with:
           zone_id: ${{ secrets.CF_ZONE_ID }}
           api_token: ${{ secrets.CF_API_TOKEN }}
-          paths: |
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/index.html
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/MANIFEST.json
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/SHA256SUMS
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/${{ steps.vars.outputs.output_filename }}
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/
+          paths: ${{ steps.purge-paths.outputs.paths }}
 
       - name: Upload artifacts (CI debugging)
         if: always()
