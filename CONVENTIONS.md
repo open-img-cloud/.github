@@ -127,15 +127,17 @@ Each release publishes alongside the qcow2:
 
 Default `true`. After `virt-sparsify` and BEFORE checksums/sign/publish,
 the reusable workflow boots the produced qcow2 in qemu (KVM-accelerated)
-with a freshly-generated NoCloud seed:
+with a freshly-generated **ConfigDrive** seed:
 
 - Ephemeral ed25519 SSH key generated at run time.
-- `meta-data` + `user-data` written to a 2MB vfat image labeled `cidata`
-  (built via `mkfs.vfat` + `guestfish`, no genisoimage/mtools needed —
+- ConfigDrive seed layout written to a 4MB vfat image labeled `CONFIG-2`:
+  - `/openstack/latest/meta_data.json` (uuid + hostname)
+  - `/openstack/latest/user_data` (cloud-config: smoketest user + marker file)
+- Built via `mkfs.vfat` + `guestfish` (no genisoimage/mtools needed —
   all tools already in the stackopshq builder).
 - qcow2 booted via a backing-file overlay so the release artifact stays
   byte-identical post-test.
-- `user-data` defines a `smoketest` user (sudo NOPASSWD, key-only) and
+- `user_data` defines a `smoketest` user (sudo NOPASSWD, key-only) and
   writes a marker file `/etc/cloud-init-smoke-ok`.
 - Test loop SSHs into 127.0.0.1:2222 (qemu user-mode hostfwd) and waits
   up to `smoke_test_timeout_seconds` (default 300s) for the marker to
@@ -143,6 +145,14 @@ with a freshly-generated NoCloud seed:
   and fails the build.
 - Final checks: `cloud-init status --long` must not report `error`,
   `/etc/os-release` is logged for sanity.
+
+> **ConfigDrive vs NoCloud**: ConfigDrive is the openstack-standard seed
+> format. We picked it over NoCloud because most cloud images already
+> include `ConfigDrive` in their `datasource_list` (it's how Proxmox
+> seeds cloud-init too), so the smoke test works for any consumer
+> without imposing a config.cfg edit. If your consumer image specifically
+> does NOT include `ConfigDrive` in datasource_list, set
+> `smoke_test: false` until you add it.
 
 This catches regressions in cloud-init / GRUB / sysprep / customize.sh
 **before** the release is signed and uploaded. If the consumer's image

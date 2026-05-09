@@ -339,15 +339,26 @@ jobs:
           rm -f build/work/working.qcow2
           ls -lh "$out"
 
-      - name: Smoke test (boot + cloud-init NoCloud)
+      - name: Smoke test (boot + cloud-init ConfigDrive)
         # Boots the produced qcow2 in qemu (KVM-accelerated) with a freshly-
-        # generated NoCloud seed disk, waits for cloud-init to apply the
+        # generated ConfigDrive seed disk, waits for cloud-init to apply the
         # user-data, and SSHs into the guest to verify it actually came up.
         # Fails the build BEFORE checksums/sign/publish so a broken release
         # never ships.
         #
+        # ConfigDrive (vs NoCloud) is the openstack-standard seed format and
+        # is included in most cloud images' default `datasource_list`
+        # (alpaquita's includes it, Proxmox supports it). NoCloud requires
+        # consumers to opt in by adding `NoCloud` to their datasource_list,
+        # which we want to avoid imposing.
+        #
+        # ConfigDrive seed layout (vfat label `config-2`):
+        #   /openstack/latest/meta_data.json
+        #   /openstack/latest/user_data
+        #
         # Tools required (all already in the stackopshq builder image):
-        #   qemu-system-x86_64, qemu-img  (qemu-kvm-core)
+        #   qemu-kvm                      (qemu-kvm-core)
+        #   qemu-img                      (qemu-img)
         #   mkfs.vfat                     (dosfstools)
         #   guestfish                     (libguestfs-tools-c)
         #   ssh, ssh-keygen               (openssh-clients)
@@ -366,15 +377,16 @@ jobs:
           ssh-keygen -t ed25519 -f "$work/key" -N '' -q -C smoke-test
           pubkey=$(cat "$work/key.pub")
 
-          # 2. NoCloud seed: vfat image labeled `cidata` containing
-          # meta-data + user-data. Built via mkfs.vfat + guestfish so we
-          # don't need genisoimage/mtools.
-          mkdir -p "$work/seed"
-          cat > "$work/seed/meta-data" <<EOF
-          instance-id: smoke-${RANDOM}
-          local-hostname: smoke-test
+          # 2. ConfigDrive seed contents.
+          mkdir -p "$work/seed/openstack/latest"
+          cat > "$work/seed/openstack/latest/meta_data.json" <<EOF
+          {
+            "uuid": "smoke-${RANDOM}-${RANDOM}",
+            "hostname": "smoke-test",
+            "name": "smoke-test"
+          }
           EOF
-          cat > "$work/seed/user-data" <<EOF
+          cat > "$work/seed/openstack/latest/user_data" <<EOF
           #cloud-config
           users:
             - name: smoketest
@@ -389,13 +401,18 @@ jobs:
               permissions: '0644'
           EOF
 
-          truncate -s 2M "$work/seed.img"
-          mkfs.vfat -n cidata "$work/seed.img" >/dev/null
+          # 3. Build the vfat seed image with label CONFIG-2 (uppercase
+          # because mkfs.vfat warns on lowercase and ConfigDrive spec
+          # accepts both).
+          truncate -s 4M "$work/seed.img"
+          mkfs.vfat -n CONFIG-2 "$work/seed.img" >/dev/null
           guestfish --rw -a "$work/seed.img" <<EOF
           run
           mount /dev/sda /
-          copy-in $work/seed/meta-data /
-          copy-in $work/seed/user-data /
+          mkdir /openstack
+          mkdir /openstack/latest
+          copy-in $work/seed/openstack/latest/meta_data.json /openstack/latest
+          copy-in $work/seed/openstack/latest/user_data /openstack/latest
           umount /
           EOF
 
