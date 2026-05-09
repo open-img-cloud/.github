@@ -57,8 +57,9 @@ on:
         type: boolean
         default: true
       bucket_name:
+        description: 'Bucket name override (default: os_name; per-distro bucket model).'
         type: string
-        default: 'oic-images'
+        default: ''
       sign:
         type: boolean
         default: true

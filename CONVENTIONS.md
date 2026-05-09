@@ -75,6 +75,39 @@ https://images.openimages.cloud/<os_name>/<version>/<filename>
 https://images.openimages.cloud/<os_name>/latest/<filename>
 ```
 
+## Storage layout: one bucket per distribution
+
+Each image repo gets its **own bucket** on each backend, named exactly
+after the repo / OS slug (`os_name`). The bucket must exist on both
+Garage (source of truth) and R2 (CDN mirror) before a release fires —
+the publish action does not create them.
+
+```
+Garage / R2 buckets   <os_name>          (e.g. alpaquita-linux, alpine-linux)
+Path inside bucket     <version>/<filename>      ← immutable, max-age=31536000
+                       latest/<filename>          ← mutable alias, max-age=300
+```
+
+The public URL **stays unchanged**:
+```
+https://images.openimages.cloud/<os_name>/<version>/<filename>
+```
+A Cloudflare worker / origin rule maps the URL path's first segment
+to the corresponding R2 bucket (i.e. `/<os_name>/<rest>` → bucket
+`<os_name>`, key `<rest>`). Adding a new image repo is a 3-step
+operation:
+1. Create bucket `<os_name>` on Garage (`garage bucket create <os_name>`).
+2. Create R2 bucket `<os_name>` and grant the org-level R2 API token
+   write access to it.
+3. Add a Cloudflare worker / rules entry mapping `/<os_name>/...` to
+   the new R2 bucket (or use a wildcard rule that auto-routes any
+   first-path-segment).
+
+The `bucket_name` input on the reusable workflows defaults to empty,
+which makes the `publish-image` composite action fall back to `os_name`.
+Override it only for staging / QA buckets (e.g.
+`bucket_name: staging-alpaquita-linux`).
+
 ## Verifying a published image
 
 Each release publishes alongside the qcow2:
