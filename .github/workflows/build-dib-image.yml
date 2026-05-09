@@ -265,11 +265,11 @@ jobs:
           set -euo pipefail
           cd build/output
           # See build-libguestfs-image.yml for cosign 3.x bundle rationale.
+          # Without --new-bundle-format, cosign produces .sig + .cert + .bundle.
           cosign sign-blob "$OUTPUT_FILENAME" \
             --output-signature   "${OUTPUT_FILENAME}.sig" \
             --output-certificate "${OUTPUT_FILENAME}.cert" \
             --bundle             "${OUTPUT_FILENAME}.bundle" \
-            --new-bundle-format=true \
             --yes
 
       - name: Generate MANIFEST.json
@@ -312,7 +312,8 @@ jobs:
               },
               signed: $signed,
               signature: (if $signed then ($filename + ".sig") else null end),
-              certificate: (if $signed then ($filename + ".cert") else null end)
+              certificate: (if $signed then ($filename + ".cert") else null end),
+              bundle: (if $signed then ($filename + ".bundle") else null end)
             }' > MANIFEST.json
 
       - name: Publish to Garage and R2

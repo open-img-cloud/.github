@@ -327,15 +327,22 @@ jobs:
         run: |
           set -euo pipefail
           cd build/output
-          # Cosign 3.x requires --bundle (sigstore protobuf bundle) and
-          # accepts --new-bundle-format=true to write the modern format.
-          # We also keep the legacy --output-signature / --output-certificate
-          # for backward compatibility with consumers that don't speak bundle.
+          # Cosign 3.x signs into 3 files when --new-bundle-format is NOT set:
+          #   - <file>.sig   raw base64 signature (legacy)
+          #   - <file>.cert  PEM x509 certificate (legacy)
+          #   - <file>.bundle JSON bundle aggregating all sigstore claims
+          #
+          # Setting --new-bundle-format=true writes the bundle in the modern
+          # sigstore protobuf format BUT explicitly ignores --output-signature
+          # and --output-certificate (warnings: "deprecated when using
+          # --new-bundle-format and will be ignored"), so we'd lose the side
+          # files. We need all three so MANIFEST.json can advertise both
+          # the legacy verification path (.sig + .cert) for cosign 2.x
+          # consumers AND the bundle path for cosign 3.x consumers.
           cosign sign-blob "$OUTPUT_FILENAME" \
             --output-signature   "${OUTPUT_FILENAME}.sig" \
             --output-certificate "${OUTPUT_FILENAME}.cert" \
             --bundle             "${OUTPUT_FILENAME}.bundle" \
-            --new-bundle-format=true \
             --yes
 
       - name: Generate MANIFEST.json
@@ -380,7 +387,8 @@ jobs:
               },
               signed: $signed,
               signature: (if $signed then ($filename + ".sig") else null end),
-              certificate: (if $signed then ($filename + ".cert") else null end)
+              certificate: (if $signed then ($filename + ".cert") else null end),
+              bundle: (if $signed then ($filename + ".bundle") else null end)
             }' > MANIFEST.json
           cat MANIFEST.json
 
