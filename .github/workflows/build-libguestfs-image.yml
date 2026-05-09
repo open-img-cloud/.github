@@ -327,9 +327,15 @@ jobs:
         run: |
           set -euo pipefail
           cd build/output
+          # Cosign 3.x requires --bundle (sigstore protobuf bundle) and
+          # accepts --new-bundle-format=true to write the modern format.
+          # We also keep the legacy --output-signature / --output-certificate
+          # for backward compatibility with consumers that don't speak bundle.
           cosign sign-blob "$OUTPUT_FILENAME" \
-            --output-signature "${OUTPUT_FILENAME}.sig" \
+            --output-signature   "${OUTPUT_FILENAME}.sig" \
             --output-certificate "${OUTPUT_FILENAME}.cert" \
+            --bundle             "${OUTPUT_FILENAME}.bundle" \
+            --new-bundle-format=true \
             --yes
 
       - name: Generate MANIFEST.json

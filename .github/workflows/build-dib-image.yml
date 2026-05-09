@@ -263,9 +263,12 @@ jobs:
         run: |
           set -euo pipefail
           cd build/output
+          # See build-libguestfs-image.yml for cosign 3.x bundle rationale.
           cosign sign-blob "$OUTPUT_FILENAME" \
-            --output-signature "${OUTPUT_FILENAME}.sig" \
+            --output-signature   "${OUTPUT_FILENAME}.sig" \
             --output-certificate "${OUTPUT_FILENAME}.cert" \
+            --bundle             "${OUTPUT_FILENAME}.bundle" \
+            --new-bundle-format=true \
             --yes
 
       - name: Generate MANIFEST.json
