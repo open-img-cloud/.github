@@ -518,6 +518,28 @@ jobs:
             wc -l "$work/serial.log" || true
             cat "$work/serial.log" || true
             echo "::endgroup::"
+
+            # Post-mortem: kill qemu and inspect the overlay disk so we see
+            # exactly what cloud-init wrote (authorized_keys, perms, logs).
+            # The overlay is a thin copy of the release qcow2 + everything
+            # cloud-init has written this boot.
+            if [[ -f "$work/qemu.pid" ]]; then
+              kill "$(cat "$work/qemu.pid")" 2>/dev/null || true
+              sleep 2
+              kill -9 "$(cat "$work/qemu.pid")" 2>/dev/null || true
+            fi
+            echo "::group::guest filesystem post-mortem (guestfish)"
+            guestfish --ro -a "$work/overlay.qcow2" -i <<'GFISH' 2>&1 || true
+              ll /home
+              ll /home/smoketest
+              ll /home/smoketest/.ssh
+              cat /home/smoketest/.ssh/authorized_keys
+              cat /etc/passwd
+              cat /etc/ssh/sshd_config
+              tail-n 100 /var/log/cloud-init.log
+              tail-n 100 /var/log/cloud-init-output.log
+            GFISH
+            echo "::endgroup::"
             exit 1
           fi
           echo "Smoke test: cloud-init applied user-data and SSH is up"
