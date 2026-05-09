@@ -584,6 +584,7 @@ jobs:
               /etc/ssh/sshd_config \
               /etc/ssh/sshd_config.d \
               /etc/pam.d \
+              /etc/network/interfaces \
               /home/smoketest \
               /var/log/cloud-init.log \
               /var/log/cloud-init-output.log \
@@ -603,6 +604,8 @@ jobs:
               echo "=== $f ==="
               cat "$f" 2>&1 || true
             done
+            echo "--- /etc/network/interfaces ---"
+            cat "$work/postmortem/interfaces" 2>&1 || true
             echo "--- /etc/pam.d/sshd ---"
             cat "$work/postmortem/pam.d/sshd" 2>&1 || true
             echo "--- /etc/pam.d/base-auth ---"
