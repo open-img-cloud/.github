@@ -31,11 +31,33 @@ image's keyless signature; the build is aborted if verification fails. See
 ## Required org-level secrets
 
 Inherited by reusable workflows via `secrets: inherit`. Configure once at the
-org level (Settings → Secrets and variables → Actions → New organization secret):
+org level (Settings → Secrets and variables → Actions → New organization secret)
+and grant access to the runner-group repos (or "Selected repositories"):
 
 - `S3_GARAGE_ENDPOINT`, `S3_GARAGE_KEY_ID`, `S3_GARAGE_SECRET`
 - `R2_ENDPOINT`, `R2_KEY_ID`, `R2_SECRET`
 - `CF_ZONE_ID`, `CF_API_TOKEN`
+
+These secrets are declared `required: false` in the reusable workflow
+definitions so PR validation / dry-runs (`workflow_dispatch publish=false`)
+can dispatch without them. When `publish=true`, the build job runs a
+fail-fast validation step that errors out if any are empty.
+
+## Tracked `build/` directory
+
+If your global gitignore excludes `build/` (a common pattern, e.g. for
+Go / Cargo / Maven build outputs), add a repo-local override so the
+build hooks (`customize.sh`, `detect-upstream.sh`, `config/`) get tracked:
+
+```gitignore
+# Override global build/ exclusion: this repo uses build/ for OIC build hooks.
+!/build/
+```
+
+A leading `!/build/` re-includes the directory at repo root. Note that
+files initially have to be force-added (`git add -f build/...`) the
+first time, since gitignore takes precedence on staging until the
+override is committed.
 
 ## Release flow
 

@@ -94,23 +94,20 @@ on:
         type: string
         default: 'main'
 
+    # All publish-related secrets are declared `required: false` so callers
+    # can dispatch the workflow with `publish: false` without configuring
+    # any storage / CDN credentials (handy for PR validation and dry-runs).
+    # When `publish: true`, the build job runs a `validate-publish-secrets`
+    # step that fails fast if any of these are missing.
     secrets:
-      S3_GARAGE_ENDPOINT:
-        required: true
-      S3_GARAGE_KEY_ID:
-        required: true
-      S3_GARAGE_SECRET:
-        required: true
-      R2_ENDPOINT:
-        required: true
-      R2_KEY_ID:
-        required: true
-      R2_SECRET:
-        required: true
-      CF_ZONE_ID:
-        required: true
-      CF_API_TOKEN:
-        required: true
+      S3_GARAGE_ENDPOINT: { required: false }
+      S3_GARAGE_KEY_ID:   { required: false }
+      S3_GARAGE_SECRET:   { required: false }
+      R2_ENDPOINT:        { required: false }
+      R2_KEY_ID:          { required: false }
+      R2_SECRET:          { required: false }
+      CF_ZONE_ID:         { required: false }
+      CF_API_TOKEN:       { required: false }
 
 permissions:
   contents: read
@@ -204,6 +201,35 @@ jobs:
             echo "upstream_url=$upstream_url"
           } >> "$GITHUB_OUTPUT"
           echo "Resolved: version=$version output=$output_filename"
+
+      - name: Validate publish secrets (fail fast when publish=true)
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          S3_GARAGE_ENDPOINT: ${{ secrets.S3_GARAGE_ENDPOINT }}
+          S3_GARAGE_KEY_ID: ${{ secrets.S3_GARAGE_KEY_ID }}
+          S3_GARAGE_SECRET: ${{ secrets.S3_GARAGE_SECRET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_KEY_ID: ${{ secrets.R2_KEY_ID }}
+          R2_SECRET: ${{ secrets.R2_SECRET }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -eo pipefail
+          missing=()
+          for var in S3_GARAGE_ENDPOINT S3_GARAGE_KEY_ID S3_GARAGE_SECRET \
+                     R2_ENDPOINT R2_KEY_ID R2_SECRET \
+                     CF_ZONE_ID CF_API_TOKEN; do
+            if [[ -z "${!var:-}" ]]; then
+              missing+=("$var")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::publish=true but the following org secrets are missing or empty: ${missing[*]}"
+            echo "::error::configure them at https://github.com/organizations/${{ github.repository_owner }}/settings/secrets/actions or set publish=false for a dry-run"
+            exit 1
+          fi
+          echo "All publish secrets present."
 
       - name: Prepare build directories
         shell: bash
