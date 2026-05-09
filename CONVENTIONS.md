@@ -123,6 +123,36 @@ Each release publishes alongside the qcow2:
   base rootfs → published artifact).
 - `index.html` static directory listing
 
+## Smoke test (`smoke_test` input)
+
+Default `true`. After `virt-sparsify` and BEFORE checksums/sign/publish,
+the reusable workflow boots the produced qcow2 in qemu (KVM-accelerated)
+with a freshly-generated NoCloud seed:
+
+- Ephemeral ed25519 SSH key generated at run time.
+- `meta-data` + `user-data` written to a 2MB vfat image labeled `cidata`
+  (built via `mkfs.vfat` + `guestfish`, no genisoimage/mtools needed —
+  all tools already in the stackopshq builder).
+- qcow2 booted via a backing-file overlay so the release artifact stays
+  byte-identical post-test.
+- `user-data` defines a `smoketest` user (sudo NOPASSWD, key-only) and
+  writes a marker file `/etc/cloud-init-smoke-ok`.
+- Test loop SSHs into 127.0.0.1:2222 (qemu user-mode hostfwd) and waits
+  up to `smoke_test_timeout_seconds` (default 300s) for the marker to
+  appear. On timeout, dumps the last 100 lines of the serial console
+  and fails the build.
+- Final checks: `cloud-init status --long` must not report `error`,
+  `/etc/os-release` is logged for sanity.
+
+This catches regressions in cloud-init / GRUB / sysprep / customize.sh
+**before** the release is signed and uploaded. If the consumer's image
+genuinely doesn't need cloud-init (some appliance images), set
+`smoke_test: false`.
+
+The dib reusable workflow does not yet ship a smoke test (octavia-amphora
+isn't a generic-shell-access image; if needed, add a custom smoke
+pattern there).
+
 ## Multi-variant builds (`variant` input)
 
 When a single OS produces multiple binary variants for the same version

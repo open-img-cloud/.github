@@ -49,6 +49,14 @@ on:
         description: 'Whether virt-sparsify should produce a compressed qcow2.'
         type: boolean
         default: true
+      smoke_test:
+        description: 'Whether to boot the produced qcow2 in qemu with a NoCloud seed and verify cloud-init runs end-to-end. Catches regressions in cloud-init / grub / sysprep BEFORE publish. Adds ~1-2 min to the build job.'
+        type: boolean
+        default: true
+      smoke_test_timeout_seconds:
+        description: 'Hard cap on the smoke-test wait loop (default 300s = 5 min). Bump for slow guests.'
+        type: number
+        default: 300
       runner_labels:
         description: 'JSON array of self-hosted runner labels (default: KVM-capable Linux runners).'
         type: string
@@ -330,6 +338,129 @@ jobs:
           virt-sparsify "${flags[@]}" build/work/working.qcow2 "$out"
           rm -f build/work/working.qcow2
           ls -lh "$out"
+
+      - name: Smoke test (boot + cloud-init NoCloud)
+        # Boots the produced qcow2 in qemu (KVM-accelerated) with a freshly-
+        # generated NoCloud seed disk, waits for cloud-init to apply the
+        # user-data, and SSHs into the guest to verify it actually came up.
+        # Fails the build BEFORE checksums/sign/publish so a broken release
+        # never ships.
+        #
+        # Tools required (all already in the stackopshq builder image):
+        #   qemu-system-x86_64, qemu-img  (qemu-kvm-core)
+        #   mkfs.vfat                     (dosfstools)
+        #   guestfish                     (libguestfs-tools-c)
+        #   ssh, ssh-keygen               (openssh-clients)
+        if: ${{ inputs.smoke_test }}
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          TIMEOUT_S: ${{ inputs.smoke_test_timeout_seconds }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          work=$(mktemp -d)
+          trap 'kill $(cat "$work/qemu.pid" 2>/dev/null) 2>/dev/null || true; rm -rf "$work"' EXIT
+
+          # 1. Ephemeral SSH key for this run.
+          ssh-keygen -t ed25519 -f "$work/key" -N '' -q -C smoke-test
+          pubkey=$(cat "$work/key.pub")
+
+          # 2. NoCloud seed: vfat image labeled `cidata` containing
+          # meta-data + user-data. Built via mkfs.vfat + guestfish so we
+          # don't need genisoimage/mtools.
+          mkdir -p "$work/seed"
+          cat > "$work/seed/meta-data" <<EOF
+          instance-id: smoke-${RANDOM}
+          local-hostname: smoke-test
+          EOF
+          cat > "$work/seed/user-data" <<EOF
+          #cloud-config
+          users:
+            - name: smoketest
+              groups: [wheel]
+              sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+              shell: /bin/ash
+              ssh_authorized_keys:
+                - $pubkey
+          write_files:
+            - path: /etc/cloud-init-smoke-ok
+              content: "smoke\n"
+              permissions: '0644'
+          EOF
+
+          truncate -s 2M "$work/seed.img"
+          mkfs.vfat -n cidata "$work/seed.img" >/dev/null
+          guestfish --rw -a "$work/seed.img" <<EOF
+          run
+          mount /dev/sda /
+          copy-in $work/seed/meta-data /
+          copy-in $work/seed/user-data /
+          umount /
+          EOF
+
+          # 3. Throwaway overlay so the smoke test doesn't mutate the
+          # release qcow2 (which has been sparsified/compressed).
+          qemu-img create -f qcow2 -F qcow2 -b "$(realpath "$out")" "$work/overlay.qcow2" >/dev/null
+
+          # 4. Boot. user-mode networking with port-forward 2222 → 22.
+          # -nographic + serial-to-file so we can dump the boot log on
+          # failure.
+          qemu-system-x86_64 \
+            -enable-kvm -cpu host \
+            -m 1024 -smp 2 \
+            -nographic \
+            -drive file="$work/overlay.qcow2",format=qcow2,if=virtio \
+            -drive file="$work/seed.img",format=raw,if=virtio,readonly=on \
+            -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
+            -device virtio-net-pci,netdev=net0 \
+            -serial file:"$work/serial.log" \
+            -monitor none \
+            -daemonize -pidfile "$work/qemu.pid"
+
+          # 5. Wait until SSH answers with the marker file.
+          ssh_opts="-i $work/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR -p 2222 smoketest@127.0.0.1"
+          deadline=$((SECONDS + TIMEOUT_S))
+          ok=0
+          while (( SECONDS < deadline )); do
+            if marker=$(ssh $ssh_opts 'cat /etc/cloud-init-smoke-ok' 2>/dev/null) && [[ "$marker" == "smoke" ]]; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$ok" -ne 1 ]]; then
+            echo "::error::Smoke test timed out after ${TIMEOUT_S}s — guest did not boot or cloud-init did not apply user-data"
+            echo "::group::serial.log (last 100 lines)"
+            tail -n 100 "$work/serial.log" || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Smoke test: cloud-init applied user-data and SSH is up"
+
+          # 6. Deeper checks: cloud-init final status + os-release.
+          echo "::group::cloud-init status --long"
+          ssh $ssh_opts 'cloud-init status --long' || true
+          echo "::endgroup::"
+          echo "::group::os-release"
+          ssh $ssh_opts 'cat /etc/os-release' || true
+          echo "::endgroup::"
+
+          # Hard-fail if cloud-init is in 'error' state even though the
+          # marker was written (some modules can fail post-write_files).
+          status=$(ssh $ssh_opts "cloud-init status 2>/dev/null | awk '{print \$NF}'" || echo unknown)
+          if [[ "$status" == "error" ]]; then
+            echo "::error::cloud-init final status is 'error'"
+            exit 1
+          fi
+
+          # 7. Graceful shutdown.
+          ssh $ssh_opts 'sudo poweroff' >/dev/null 2>&1 || true
+          # Wait briefly for poweroff; if not gone after 15s, EXIT trap kills.
+          for _ in $(seq 1 15); do
+            kill -0 "$(cat "$work/qemu.pid")" 2>/dev/null || break
+            sleep 1
+          done
 
       - name: Generate checksums
         id: checksum
