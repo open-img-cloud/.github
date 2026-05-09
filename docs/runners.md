@@ -292,28 +292,35 @@ gh api -X PUT /orgs/open-img-cloud/actions/runner-groups/<group_id>/runners/<run
 When registering a new runner, pass `--runnergroup image-builders` to
 `config.sh` (already in step 5).
 
-### 8.2 Ephemeral runners
+### 8.2 Ephemeral runners — NOT APPLIED, here's why
 
-Each runner process exits after a single job. systemd restarts the
-service, which re-uses the persisted runner credentials and reconnects
-to the org as the same agent. No inter-job state contamination, no
-runner-agent leftovers from previous jobs.
+`--ephemeral` was tested and rolled back during the first end-to-end
+consumer run. The standalone-bare-metal pattern (register once with
+`--ephemeral`, rely on systemd `Restart=always` to relaunch) is
+**broken**: the actions/runner agent deregisters itself server-side
+after each job exit, but the persisted local credentials are then
+invalidated, and the systemd-restarted process can no longer reconnect.
+The org-wide `/actions/runners` API drops to zero runners after the
+first job runs (success OR failure), and the local agent shows
+"Listening for Jobs" but is effectively a zombie.
 
-Register with `--ephemeral`:
+GitHub's intended ephemeral patterns require external orchestration that
+mints a fresh registration token for each runner instance:
+- **JIT (Just-in-Time) runners** — an external service calls
+  `POST /orgs/.../actions/runners/generate-jitconfig` per job and starts
+  a new runner process with the resulting one-shot config.
+- **Actions Runner Controller (ARC)** on Kubernetes — does the same
+  thing automatically, scaling pods up/down per pending workflow.
 
-```sh
-sudo -u gh-runner ./config.sh \
-    --url https://github.com/open-img-cloud \
-    --token <REGISTRATION_TOKEN> \
-    --name "$(hostname -s)" \
-    --labels "self-hosted,Linux,kvm" \
-    --runnergroup image-builders \
-    --ephemeral \
-    --work _work \
-    --unattended
-```
+Neither is in scope for this 2-runner bare-metal setup. We **stay on
+persistent runners** (no `--ephemeral` flag), and rely on the
+`container:` keyword in the reusable workflows for inter-job isolation
+(each job runs in a fresh container, the runner host doesn't accumulate
+job state in any meaningful way; the `_work/` directory is cleaned
+between jobs by the runner agent).
 
-Add a systemd drop-in so the service restarts after each job exit:
+We **do** keep the `Restart=always` drop-in — it's still valuable for
+resilience against agent crashes and connection drops:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/actions.runner.open-img-cloud.$(hostname -s).service.d
@@ -326,8 +333,8 @@ sudo systemctl daemon-reload
 sudo systemctl restart actions.runner.open-img-cloud.$(hostname -s).service
 ```
 
-Verify with `sudo systemctl status actions.runner.open-img-cloud.<host>.service`
-— the output should show the `Drop-In:` block referencing `restart.conf`.
+If you ever migrate to ARC or a JIT-token orchestrator, revisit this
+section.
 
 ### 8.3 Weekly podman storage GC
 
