@@ -529,16 +529,21 @@ jobs:
               kill -9 "$(cat "$work/qemu.pid")" 2>/dev/null || true
             fi
             echo "::group::guest filesystem post-mortem (guestfish)"
-            guestfish --ro -a "$work/overlay.qcow2" -i <<'GFISH' 2>&1 || true
-              ll /home
-              ll /home/smoketest
-              ll /home/smoketest/.ssh
-              cat /home/smoketest/.ssh/authorized_keys
-              cat /etc/passwd
-              cat /etc/ssh/sshd_config
-              tail-n 100 /var/log/cloud-init.log
-              tail-n 100 /var/log/cloud-init-output.log
-            GFISH
+            # NOTE: assembled via printf rather than a heredoc — the YAML
+            # `run: |` block strips a fixed indent relative to the first
+            # line, so a `<<'EOF'` terminator inside this block can't sit
+            # at column 0 without breaking the YAML, and a heredoc's
+            # terminator MUST be at column 0 (or use `<<-` with TABs).
+            printf '%s\n' \
+              'll /home' \
+              'll /home/smoketest' \
+              'll /home/smoketest/.ssh' \
+              'cat /home/smoketest/.ssh/authorized_keys' \
+              'cat /etc/passwd' \
+              'cat /etc/ssh/sshd_config' \
+              'tail-n 100 /var/log/cloud-init.log' \
+              'tail-n 100 /var/log/cloud-init-output.log' \
+              | guestfish --ro -a "$work/overlay.qcow2" -i 2>&1 || true
             echo "::endgroup::"
             exit 1
           fi
