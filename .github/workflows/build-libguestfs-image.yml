@@ -540,7 +540,13 @@ jobs:
               'll /home/smoketest/.ssh' \
               'cat /home/smoketest/.ssh/authorized_keys' \
               'cat /etc/passwd' \
+              'cat /etc/shadow' \
               'cat /etc/ssh/sshd_config' \
+              'ls /etc/ssh/sshd_config.d' \
+              'find /etc/ssh/sshd_config.d -type f' \
+              'cat /etc/pam.d/sshd' \
+              'cat /etc/pam.d/base-auth' \
+              'cat /etc/pam.d/base-account' \
               'tail-n 100 /var/log/cloud-init.log' \
               'tail-n 100 /var/log/cloud-init-output.log' \
               | guestfish --ro -a "$work/overlay.qcow2" -i 2>&1 || true
