@@ -114,22 +114,28 @@ Each release publishes alongside the qcow2:
 
 - `<filename>.sha256`, `.sha1`, `.md5` per-file checksums
 - `SHA256SUMS` aggregated checksum file
-- `<filename>.sig`, `<filename>.cert` cosign keyless signature & certificate
+- `<filename>.bundle` cosign sigstore-bundle (signature + certificate +
+  Rekor proof bundled, modern cosign 3.x format)
 - `MANIFEST.json` build metadata, including a `builder` block recording the
   exact builder image reference and content digest used to produce the qcow2
   (full chain of custody from base rootfs → published artifact).
 - `index.html` static directory listing
 
-End users verify with:
+End users verify with cosign 3.x:
 
 ```sh
 sha256sum -c SHA256SUMS
-cosign verify-blob --certificate <filename>.cert \
-                   --signature   <filename>.sig  \
+cosign verify-blob --bundle <filename>.bundle \
+                   --new-bundle-format \
                    --certificate-identity-regexp "https://github.com/open-img-cloud/" \
                    --certificate-oidc-issuer     "https://token.actions.githubusercontent.com" \
                    <filename>
 ```
+
+> Cosign 3.0 made the protobuf bundle format the default and dropped the
+> legacy `.sig` + `.cert` side files. Earlier releases of this repo's
+> images shipped both formats; from v2026.04.14 forward, only `.bundle`
+> is published. Consumers on cosign 2.x should upgrade to 3.x to verify.
 
 ## Example: `release.yml` for a libguestfs-based repo
 
