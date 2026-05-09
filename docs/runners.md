@@ -36,6 +36,7 @@ OS:
 sudo dnf -y update
 sudo dnf -y install \
     podman \
+    podman-docker \
     qemu-kvm \
     libvirt-daemon-driver-qemu \
     jq \
@@ -45,6 +46,13 @@ sudo dnf -y install \
     policycoreutils-python-utils
 ```
 
+> `podman-docker` provides the `/usr/bin/docker` shim that calls podman.
+> The GitHub Actions runner agent uses `docker` CLI internally to start
+> the job container declared via `container:` in workflows; without the
+> shim, jobs fail at "Starting job container" with `docker: command not
+> found`. The shim package also installs the `/var/run/docker.sock`
+> symlink pointing at the rootful podman socket (configured in §4).
+>
 > `qemu-kvm` and `libvirt-daemon-driver-qemu` are needed on the **host** so
 > `/dev/kvm` exists and is accessible. The builder container brings its own
 > userspace tools (`qemu-img`, `virt-customize`, …) — but the kernel-side
@@ -139,26 +147,106 @@ If you have multiple non-root users running rootless podman on the same
 host, allocate non-overlapping ranges (e.g. `100000-165535`,
 `200000-265535`, …).
 
-### 3.3 Workspace bind mounts
+### 3.3 `_work/` directory must be `container_file_t` (mandatory)
 
-If the consumer workflow bind-mounts the runner workspace into a container
-and you see AVC denials on `/var/lib/gh-runner/_work/`:
+When the GHA runner downloads action implementations (e.g.
+`actions/checkout`, `sigstore/cosign-installer`), it places them under
+`/var/lib/gh-runner/_work/_actions/<owner>/<repo>/<sha>/`. Files inherit
+the parent directory's SELinux label, which by default is `var_lib_t`.
 
-```sh
-sudo restorecon -Rv /var/lib/gh-runner
+When the runner then starts the job container with
+`-v /var/lib/gh-runner/_work:/__w` (a default bind mount it does without
+a `:Z` flag), rootless podman can mount the path but processes inside
+the container cannot read the files. The visible symptom is **Node.js
+crashing in actions/checkout** with:
+
+```
+Error: Cannot find module '/__w/_actions/actions/checkout/<sha>/dist/index.js'
+code: 'MODULE_NOT_FOUND'
 ```
 
-For persistent labelling of a custom workdir:
+even though the file is present on the host (`ls` works as `gh-runner`).
+There's no AVC entry — SELinux silently blocks the rootless container's
+read of `var_lib_t` files via the bind-mount.
+
+Apply a persistent fcontext rule so all `_work/` files (and any actions
+re-downloaded later) get `container_file_t`:
 
 ```sh
 sudo semanage fcontext -a -t container_file_t '/var/lib/gh-runner/_work(/.*)?'
-sudo restorecon -Rv /var/lib/gh-runner/_work
+sudo restorecon -RFv /var/lib/gh-runner/_work
 ```
+
+This is **mandatory** for any job that uses JavaScript-based actions
+(checkout, upload-artifact, cosign-installer, …) inside a `container:`
+job — i.e. virtually every reusable-workflow consumer here.
 
 > **Never** propose `setenforce 0` as a fix. Always trace AVCs with
 > `sudo ausearch -m AVC -ts recent` and adjust contexts/booleans.
 
-## 4. Install the GitHub Actions runner
+## 4. Podman socket for `container:` jobs
+
+When a workflow job declares `container:`, the runner agent (GHA's
+`docker create` path) bind-mounts `/var/run/docker.sock` into the job
+container so the workflow can spawn docker-side-cars (services,
+docker-in-docker patterns, etc.). Even when the workflow itself doesn't
+use it, the bind mount is unconditional.
+
+`podman-docker` (installed in §1) sets up the symlink
+`/var/run/docker.sock → /run/podman/podman.sock`, but the target
+service isn't enabled by default. Without this section's setup, jobs
+fail at container-creation time with:
+
+```
+Error: statfs /var/run/docker.sock: permission denied
+##[error]Exit code 125 returned from process: file name '/bin/docker', arguments 'create ...'
+```
+
+Three things have to be true:
+
+1. **`podman.socket` must be running** — creates the actual unix socket
+   at `/run/podman/podman.sock`.
+2. **The socket must be readable by the `gh-runner` user/group** —
+   default is `root:root mode 660`; needs adjustment.
+3. **The `/run/podman/` directory must be traversable by `gh-runner`** —
+   default is `mode 700` (root-only), blocks even
+   `stat -L /var/run/docker.sock` for `gh-runner`.
+
+Apply via systemd drop-ins:
+
+```sh
+# 4.1 Make the socket readable by gh-runner via group membership
+sudo mkdir -p /etc/systemd/system/podman.socket.d
+sudo tee /etc/systemd/system/podman.socket.d/group.conf <<'EOF'
+[Socket]
+SocketMode=0660
+SocketGroup=gh-runner
+EOF
+
+# 4.2 Make /run/podman/ traversable (mode 0755 instead of default 0700)
+sudo mkdir -p /etc/systemd/system/podman.service.d
+sudo tee /etc/systemd/system/podman.service.d/runtime-dir.conf <<'EOF'
+[Service]
+RuntimeDirectoryMode=0755
+EOF
+
+# 4.3 Enable + start (or restart, if already running)
+sudo systemctl daemon-reload
+sudo systemctl enable --now podman.socket
+sudo systemctl restart podman.service podman.socket  # picks up RuntimeDirectoryMode
+
+# Verify
+sudo -u gh-runner stat -L /var/run/docker.sock | head -3
+# expected: a "regular file" / "socket" with mode srw-rw---- root:gh-runner
+```
+
+> The runtime-dir mode drop-in only takes effect when systemd recreates
+> the directory — i.e. on `podman.service` restart or boot. If you've
+> already started the socket once (with the default mode 700 dir), the
+> drop-in won't retro-apply; either restart `podman.service` explicitly
+> or `chmod 0755 /run/podman` once.
+
+## 5. Install the GitHub Actions runner
 
 Get the latest runner version from
 <https://github.com/actions/runner/releases>. Replace `RUNNER_VERSION` below.
@@ -179,7 +267,7 @@ sudo -u gh-runner tar xzf actions-runner.tar.gz
 sudo -u gh-runner rm actions-runner.tar.gz
 ```
 
-## 5. Register the runner against the `open-img-cloud` org
+## 6. Register the runner against the `open-img-cloud` org
 
 Generate a registration token from the org (read-only API, expires in 1h):
 
@@ -210,7 +298,7 @@ sudo -u gh-runner ./config.sh \
 > and update the consumer repos' workflows accordingly (none currently
 > distinguish architecture; arm64 is not yet a target for openimages.cloud).
 
-## 6. Install as a systemd service
+## 7. Install as a systemd service
 
 > **Apply the SELinux relabel from §3.1 first** (before `svc.sh start`),
 > otherwise the service fails immediately with `status=203/EXEC`.
@@ -233,7 +321,7 @@ sudo -u gh-runner ./config.sh remove --token <REMOVAL_TOKEN>
 (Removal token is generated the same way as the registration token via
 `/orgs/.../actions/runners/remove-token`.)
 
-## 7. Verify end-to-end
+## 8. Verify end-to-end
 
 From any consumer repo (e.g. `open-img-cloud/alpaquita`), trigger a
 workflow_dispatch of `release.yml` with `publish: false` to dry-run a
@@ -255,12 +343,12 @@ podman run --rm --device=/dev/kvm ghcr.io/stackopshq/libguestfs-tools:2 \
     libguestfs-test-tool 2>&1 | grep -i 'kvm enabled'
 ```
 
-## 8. Hardening
+## 9. Hardening
 
 These are the hardenings actually applied to the production runners
 (`gh-runner-1`, `gh-runner-2`). Reproduce them on every new runner.
 
-### 8.1 Scoped runner group (`image-builders`)
+### 9.1 Scoped runner group (`image-builders`)
 
 Default runner groups expose runners to **all** repos in the org. We
 restrict to image build repos only via a dedicated group `image-builders`,
@@ -290,9 +378,9 @@ gh api -X PUT /orgs/open-img-cloud/actions/runner-groups/<group_id>/runners/<run
 ```
 
 When registering a new runner, pass `--runnergroup image-builders` to
-`config.sh` (already in step 5).
+`config.sh` (already in §6).
 
-### 8.2 Ephemeral runners — NOT APPLIED, here's why
+### 9.2 Ephemeral runners — NOT APPLIED, here's why
 
 `--ephemeral` was tested and rolled back during the first end-to-end
 consumer run. The standalone-bare-metal pattern (register once with
@@ -336,7 +424,7 @@ sudo systemctl restart actions.runner.open-img-cloud.$(hostname -s).service
 If you ever migrate to ARC or a JIT-token orchestrator, revisit this
 section.
 
-### 8.3 Weekly podman storage GC
+### 9.3 Weekly podman storage GC
 
 Each unique builder image version pulled stays on disk indefinitely.
 Without cleanup, runners accumulate gigabytes over time. A weekly
@@ -378,7 +466,7 @@ The `RandomizedDelaySec=30min` jitters runners apart so they don't all
 GC simultaneously. `Persistent=true` runs a missed timer at next boot
 (useful if the runner host was offline at 03:00 Sunday).
 
-### 8.4 Other recommended toggles
+### 9.4 Other recommended toggles
 
 - **Disable workflow access from forks**: in `Settings → Actions → General
   → Fork pull request workflows from outside collaborators`, require
@@ -397,7 +485,7 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
   `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus your Garage and R2
   endpoints.
 
-## 9. Common failures
+## 10. Common failures
 
 | Symptom                                                               | Fix                                                                                  |
 |-----------------------------------------------------------------------|---------------------------------------------------------------------------------------|
@@ -410,3 +498,10 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
 | Runner picks up jobs but they never start (queued forever)            | Labels mismatch. Confirm the runner has all of `self-hosted,Linux,kvm`.              |
 | `manifest unknown` when pulling `ghcr.io/stackopshq/libguestfs-tools:vN` | Tags on GHCR have no `v` prefix — use `:N`, `:N.M`, or `:N.M.P` (e.g. `:2`, not `:v2`). |
 | `podman: Error: short-name resolution enforced but cannot prompt`     | The container ref needs to be fully qualified (it is, in the workflows). Check that no caller overrides `build_container` with a short name. |
+| `docker: command not found` at "Starting job container"               | Runner host missing the `docker` CLI shim. Install `podman-docker` (§1).             |
+| `Error: statfs /var/run/docker.sock: permission denied`               | `podman.socket` not running, or `/run/podman/` not traversable. Apply both drop-ins from §4. |
+| `Cannot find module '/__w/_actions/.../dist/index.js' MODULE_NOT_FOUND` (no AVC) | `_work/` files have label `var_lib_t`, rootless container can't read them. Apply persistent `container_file_t` fcontext (§3.3). |
+| `cosign verify ... Error: no signatures found` on a multi-arch tag    | The manifest list digest is unsigned (signatures only on per-arch digests). Sign the list separately at build time. Should be fixed in the builder CI; if you see this, the builder is on an old version. |
+| `cosign verify ... Error: no signatures found` (signatures actually exist) | Cosign 2.x can't read sigs created by cosign 3.x. Pin both sides of the chain to `sigstore/cosign-installer @ v4.1.2` or newer. |
+| `cosign sign-blob: create bundle file: open : no such file or directory` | Cosign 3.x writes a sigstore bundle by default; pass `--bundle <path> --new-bundle-format=true` explicitly (already in the reusable workflows). |
+| `virt-customize: error: cannot use '--install' because no package manager has been detected for this guest OS` | libguestfs OS inspection didn't recognize the rootfs (e.g. Alpaquita, missing `ID_LIKE=alpine`). Use `--run-command 'apk add ...'` (or distro equivalent) instead of `--install`. |
