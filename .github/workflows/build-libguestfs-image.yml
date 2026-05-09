@@ -406,7 +406,25 @@ jobs:
           # 4. Boot. user-mode networking with port-forward 2222 → 22.
           # -nographic + serial-to-file so we can dump the boot log on
           # failure.
-          qemu-system-x86_64 \
+          #
+          # The qemu binary differs by distro: RHEL/Rocky package
+          # `qemu-kvm-core` ships `qemu-kvm` (and `/usr/libexec/qemu-kvm`),
+          # Debian/Ubuntu's `qemu-system-x86` ships `qemu-system-x86_64`.
+          # Both are the same upstream qemu under different names.
+          qemu_bin=""
+          for cand in qemu-kvm qemu-system-x86_64 /usr/libexec/qemu-kvm; do
+            if command -v "$cand" >/dev/null 2>&1 || [[ -x "$cand" ]]; then
+              qemu_bin=$(command -v "$cand" 2>/dev/null || echo "$cand")
+              break
+            fi
+          done
+          if [[ -z "$qemu_bin" ]]; then
+            echo "::error::no qemu binary found (tried qemu-kvm, qemu-system-x86_64, /usr/libexec/qemu-kvm)"
+            exit 1
+          fi
+          echo "Using qemu binary: $qemu_bin"
+
+          "$qemu_bin" \
             -enable-kvm -cpu host \
             -m 1024 -smp 2 \
             -nographic \
