@@ -145,6 +145,31 @@ jobs:
       os_name: alpaquita-linux
 ```
 
+## Customize hook gotchas
+
+Two non-obvious traps consistently hit customize hooks and waste a build
+or two before being noticed:
+
+1. **`virt-customize --install` requires libguestfs OS inspection to
+   recognize the guest rootfs.** Distros that aren't in the libguestfs
+   detection table (or that don't ship `ID_LIKE=<known-distro>` in
+   `/etc/os-release`) fail with:
+   ```
+   virt-customize: error: cannot use '--install' because no package
+   manager has been detected for this guest OS.
+   ```
+   **Fix:** use the distro's package manager directly via
+   `--run-command`. For example, on Alpaquita (Alpine fork, not detected):
+   `--run-command 'apk add cloud-init python3 ...'`.
+
+2. **Minimal upstream rootfs may not contain expected directories.**
+   Notably `/usr/local/sbin/` is absent from many Alpine/Alpaquita
+   images. Chain a `--mkdir <dir>` *before* the `--copy-in` that
+   targets it:
+   ```
+   --mkdir /usr/local/sbin --copy-in build/config/serial-config.sh:/usr/local/sbin/
+   ```
+
 ## Example: `build/customize.sh` for Alpaquita
 
 ```bash
@@ -154,11 +179,15 @@ set -euo pipefail
 QCOW2="$1"
 CONFIG_DIR="build/config"
 
+# Note: --install fails on Alpaquita (libguestfs doesn't detect the
+# package manager); we shell out to apk via --run-command instead.
 virt-customize -a "$QCOW2" \
-  --update \
-  --install cloud-init,python3,py3-yaml,py3-requests,e2fsprogs-extra,util-linux,shadow,sudo,qemu-guest-agent,openssh-server,dhcpcd \
+  --run-command 'apk update' \
+  --run-command 'apk upgrade' \
+  --run-command 'apk add cloud-init python3 py3-yaml py3-requests e2fsprogs-extra util-linux shadow sudo qemu-guest-agent openssh-server dhcpcd' \
   --copy-in "${CONFIG_DIR}/cloud.cfg:/etc/cloud/" \
   --copy-in "${CONFIG_DIR}/grub:/etc/default/" \
+  --mkdir /usr/local/sbin \
   --copy-in "${CONFIG_DIR}/serial-config.sh:/usr/local/sbin/" \
   --run-command 'chmod +x /usr/local/sbin/serial-config.sh && /usr/local/sbin/serial-config.sh' \
   --run-command 'grub-mkconfig -o /boot/grub/grub.cfg' \
@@ -173,20 +202,46 @@ virt-customize -a "$QCOW2" \
 ```bash
 #!/usr/bin/env bash
 # Prints the latest Alpaquita stream version (single line).
+#
+# Bell-Sw publishes Alpaquita Stream as a rolling release at a stable URL
+# pointing to "latest" — no redirect, no version-bearing metadata in the
+# URL or content-disposition header. We synthesise a date-based version
+# from the upstream qcow2.xz Last-Modified HTTP header (YYYY.MM.DD).
+# Each new upstream rebuild bumps the date.
 set -euo pipefail
 
-# Strategy: follow the redirect of the -latest- URL to discover the dated filename.
-url='https://packages.bell-sw.com/alpaquita/glibc/stream/releases/x86_64/alpaquita-stream-latest-glibc-x86_64.qcow2.xz'
-resolved=$(curl -fsSI -o /dev/null -w '%{url_effective}' -L "$url")
+URL='https://packages.bell-sw.com/alpaquita/glibc/stream/releases/x86_64/alpaquita-stream-latest-glibc-x86_64.qcow2.xz'
 
-# Expected: alpaquita-stream-<version>-glibc-x86_64.qcow2.xz
-echo "$resolved" | grep -oE 'alpaquita-stream-[^-]+-glibc' | sed -E 's/^alpaquita-stream-(.+)-glibc$/\1/'
+last_mod=$(curl -fsSI "$URL" \
+  | awk -F': ' 'tolower($1)=="last-modified"{sub(/\r$/,"",$2); print $2; exit}')
+
+if [[ -z "${last_mod:-}" ]]; then
+  echo "::error::could not read Last-Modified header from $URL" >&2
+  exit 1
+fi
+
+# RFC 7231: "Sat, 11 Apr 2026 07:50:31 GMT"
+date -u -d "$last_mod" +'%Y.%m.%d'
 ```
+
+> **Detection strategies vary per upstream.** Pick whichever maps the
+> upstream's release model into a stable, monotonically-increasing
+> string:
+> - **Versioned releases** (e.g. Rocky 10.1, Alpine 3.22.0): scrape the
+>   release index page, extract the highest version.
+> - **GitHub releases**: `gh api /repos/<owner>/<repo>/releases/latest --jq .tag_name`
+> - **Rolling release with stable URL** (Alpaquita Stream above): synthesise
+>   from the `Last-Modified` header → `YYYY.MM.DD`.
+> - **Rolling release with dated URL**: follow the redirect from a
+>   `-latest-` alias and parse the dated filename.
 
 ## Versioning rules
 
-- `VERSION` holds the upstream version verbatim, no `v` prefix (e.g., `3.22.0`, `2.0.20240711.0`).
-- Git tag for a release is `v<VERSION>` (e.g., `v3.22.0`).
+- `VERSION` holds the upstream version verbatim, no `v` prefix. Examples:
+  - Numbered release: `3.22.0`
+  - Date-stamped (e.g. for rolling-release upstreams): `2026.04.11`
+  - Custom build of upstream: `2.0.20240711.0`
+- Git tag for a release is `v<VERSION>` (e.g., `v3.22.0`, `v2026.04.11`).
 - The `version` input passed to the reusable workflow is `<VERSION>` (no `v`).
   When omitted, the workflow strips the leading `v` from `github.ref_name`.
 
