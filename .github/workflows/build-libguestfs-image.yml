@@ -93,6 +93,11 @@ on:
         description: 'Ref of open-img-cloud/.github to checkout for shared composite actions.'
         type: string
         default: 'main'
+      variant:
+        description: 'Optional variant identifier (libc, arch, ...) when the caller matrix produces multiple builds for the same version. When set, MANIFEST.json becomes MANIFEST-<variant>.json and SHA256SUMS becomes SHA256SUMS-<variant> to avoid collisions in the destination bucket.'
+        type: string
+        required: false
+        default: ''
 
     # All publish-related secrets are declared `required: false` so callers
     # can dispatch the workflow with `publish: false` without configuring
@@ -235,7 +240,7 @@ jobs:
         shell: bash
         run: mkdir -p build/work build/output
 
-      - name: Download upstream base image
+      - name: Download upstream base image (with SHA256 verification when available)
         shell: bash
         env:
           UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
@@ -244,6 +249,30 @@ jobs:
           echo "Fetching $UPSTREAM_URL"
           curl -fL --retry 3 --retry-delay 5 -o build/work/base "$UPSTREAM_URL"
           ls -lh build/work/base
+
+          # Try to fetch a SHA256 checksum published alongside the upstream
+          # artifact (most distributors publish `<url>.sha256` next to the
+          # binary). When present, verify; mismatch is fatal. When absent
+          # (some upstreams don't publish checksums on stable URLs), warn
+          # and continue — the cosign signature on our published qcow2 is
+          # the authoritative integrity check downstream.
+          sha_url="${UPSTREAM_URL}.sha256"
+          if curl -fL --silent --show-error --retry 3 --retry-delay 5 \
+               -o build/work/base.sha256 "$sha_url"; then
+            expected=$(awk '{print $1}' build/work/base.sha256 | head -1)
+            actual=$(sha256sum build/work/base | awk '{print $1}')
+            if [[ "$expected" != "$actual" ]]; then
+              echo "::error::Upstream SHA256 mismatch — possible MITM or corrupted download"
+              echo "::error::  expected: $expected"
+              echo "::error::  actual:   $actual"
+              echo "::error::  url:      $UPSTREAM_URL"
+              exit 1
+            fi
+            echo "Upstream SHA256 verified: $actual"
+            rm -f build/work/base.sha256
+          else
+            echo "::warning::No .sha256 published at $sha_url — upstream integrity not verified at fetch time. Cosign signature on the produced qcow2 remains the downstream integrity guarantee."
+          fi
 
       - name: Decompress base if needed
         shell: bash
@@ -279,8 +308,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # `yum-uuid` removed: irrelevant for non-yum guests (Alpine/Alpaquita
+          # via apk, Debian/Ubuntu via apt). Harmless on those guests but
+          # signals the wrong contract. Add `package-manager-cache` to flush
+          # /var/cache/{apk,apt,dnf}/* if the customize hook didn't.
           virt-sysprep -a build/work/working.qcow2 \
-            --enable bash-history,logfiles,machine-id,ssh-hostkeys,ssh-userdir,tmp-files,udev-persistent-net,utmp,yum-uuid
+            --enable bash-history,logfiles,machine-id,ssh-hostkeys,ssh-userdir,tmp-files,udev-persistent-net,utmp,package-manager-cache
 
       - name: virt-sparsify
         shell: bash
@@ -303,13 +336,21 @@ jobs:
         shell: bash
         env:
           OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
           cd build/output
           sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
           sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
           md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
-          sha256sum "$OUTPUT_FILENAME" > SHA256SUMS
+          # When `variant` is set, suffix the aggregated SHA256SUMS so a
+          # caller matrix (glibc/musl, ...) doesn't have its variants
+          # overwriting each other at the same bucket path.
+          sums_filename="SHA256SUMS"
+          if [[ -n "${VARIANT:-}" ]]; then
+            sums_filename="SHA256SUMS-${VARIANT}"
+          fi
+          sha256sum "$OUTPUT_FILENAME" > "$sums_filename"
           sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "SHA256: $sha"
@@ -351,12 +392,23 @@ jobs:
           SIGNED: ${{ inputs.sign }}
           BUILDER_IMAGE: ${{ inputs.build_container }}
           BUILDER_DIGEST: ${{ needs.verify-builder.outputs.digest }}
+          VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
           cd build/output
+          # When `variant` is set, write to MANIFEST-<variant>.json so a
+          # multi-variant matrix (e.g. glibc + musl) doesn't have its
+          # second job overwriting the first's manifest at the same bucket
+          # path. The MANIFEST embeds the variant string for downstream
+          # discovery.
+          manifest_filename="MANIFEST.json"
+          if [[ -n "${VARIANT:-}" ]]; then
+            manifest_filename="MANIFEST-${VARIANT}.json"
+          fi
           jq -n \
             --arg name             "$OS_NAME" \
             --arg version          "$VERSION" \
+            --arg variant          "$VARIANT" \
             --arg filename         "$OUTPUT_FILENAME" \
             --arg sha256           "$SHA256" \
             --arg upstream         "$UPSTREAM_URL" \
@@ -369,6 +421,7 @@ jobs:
             '{
               name: $name,
               version: $version,
+              variant: (if $variant == "" then null else $variant end),
               format: "qcow2",
               filename: $filename,
               sha256: $sha256,
@@ -382,8 +435,9 @@ jobs:
               },
               signed: $signed,
               bundle: (if $signed then ($filename + ".bundle") else null end)
-            }' > MANIFEST.json
-          cat MANIFEST.json
+            }' > "$manifest_filename"
+          echo "Wrote $manifest_filename:"
+          cat "$manifest_filename"
 
       - name: Publish to Garage and R2
         if: ${{ inputs.publish }}
@@ -401,19 +455,51 @@ jobs:
           r2_key_id: ${{ secrets.R2_KEY_ID }}
           r2_secret: ${{ secrets.R2_SECRET }}
 
-      - name: Purge Cloudflare cache for latest/ and indexes
+      - name: Compute Cloudflare purge URL list
+        id: purge-paths
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        shell: bash
+        env:
+          HOST: ${{ inputs.cf_public_hostname }}
+          OS_NAME: ${{ inputs.os_name }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          base="https://${HOST}/${OS_NAME}/latest"
+          {
+            echo "${base}/"
+            echo "${base}/index.html"
+            echo "${base}/${OUTPUT_FILENAME}"
+            echo "${base}/${OUTPUT_FILENAME}.bundle"
+            echo "${base}/${OUTPUT_FILENAME}.sha256"
+            # MANIFEST + SHA256SUMS: variant-aware. When variant is set, the
+            # canonical filenames are MANIFEST-<variant>.json and
+            # SHA256SUMS-<variant>. We purge both forms so single-variant
+            # callers keep working without change.
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${base}/MANIFEST-${VARIANT}.json"
+              echo "${base}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${base}/MANIFEST.json"
+              echo "${base}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/"
+          } > /tmp/purge-paths.txt
+          {
+            echo 'paths<<PURGE_EOF'
+            cat /tmp/purge-paths.txt
+            echo 'PURGE_EOF'
+          } >> "$GITHUB_OUTPUT"
+          cat /tmp/purge-paths.txt
+
+      - name: Purge Cloudflare cache for latest/
         if: ${{ inputs.publish && inputs.sync_latest }}
         uses: ./.oic-shared/actions/cf-purge
         with:
           zone_id: ${{ secrets.CF_ZONE_ID }}
           api_token: ${{ secrets.CF_API_TOKEN }}
-          paths: |
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/index.html
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/MANIFEST.json
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/SHA256SUMS
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/latest/${{ steps.vars.outputs.output_filename }}
-            https://${{ inputs.cf_public_hostname }}/${{ inputs.os_name }}/
+          paths: ${{ steps.purge-paths.outputs.paths }}
 
       - name: Upload artifacts (CI debugging, 7-day retention)
         if: always()
