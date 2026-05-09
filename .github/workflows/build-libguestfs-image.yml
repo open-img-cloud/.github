@@ -386,6 +386,12 @@ jobs:
             "name": "smoke-test"
           }
           EOF
+          # `lock_passwd: false` is required on Alpine/Alpaquita: with the
+          # default `lock_passwd: true`, cloud-init writes `!` in /etc/shadow,
+          # and Alpine's PAM stack (UsePAM yes by default in sshd) then
+          # rejects the login even with a valid SSH key. The upstream
+          # alpaquita cloud.cfg sets the same on its default user for the
+          # same reason.
           cat > "$work/seed/openstack/latest/user_data" <<EOF
           #cloud-config
           users:
@@ -393,6 +399,7 @@ jobs:
               groups: [wheel]
               sudo: ["ALL=(ALL) NOPASSWD:ALL"]
               shell: /bin/ash
+              lock_passwd: false
               ssh_authorized_keys:
                 - $pubkey
           write_files:
@@ -491,7 +498,18 @@ jobs:
             if [[ "$tcp_ok" -ne 1 ]]; then
               echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — TCP 127.0.0.1:2222 never opened (guest did not boot, or sshd not listening, or networking down)"
             else
-              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (cloud-init did not apply user-data)"
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (SSH auth failed, or cloud-init did not write the marker)"
+              # Last-ditch verbose SSH attempt to surface the auth handshake
+              # in CI output (locked account / wrong key / sshd config).
+              echo "::group::ssh -vvv (final attempt)"
+              ssh -vvv -i "$work/key" \
+                  -o StrictHostKeyChecking=no \
+                  -o UserKnownHostsFile=/dev/null \
+                  -o ConnectTimeout=5 \
+                  -o BatchMode=yes \
+                  -p 2222 smoketest@127.0.0.1 \
+                  'whoami; id; ls -la /etc/cloud-init-smoke-ok 2>&1; cloud-init status --long 2>&1 | head -30' 2>&1 | tail -120 || true
+              echo "::endgroup::"
             fi
             echo "::group::serial.log (last 500 lines)"
             tail -n 500 "$work/serial.log" || true
