@@ -1,0 +1,422 @@
+name: Reusable build Nix-flake image
+
+# Reusable workflow consumed by repos that build their image via a Nix
+# flake — currently: nixos.
+#
+# The caller ships a `build/<script>` that installs Nix (or runs in a
+# pre-Nix container), evaluates the flake, runs `nix build .#<attr>`,
+# and copies the resulting qcow2 to the output dir. Script signature
+# matches the DIB reusable: receives output dir as $1, version as $2,
+# must produce $1/<output_filename>.
+#
+# Differences vs the libguestfs / DIB reusables:
+# - No --privileged needed: Nix builds inside its own sandbox, the
+#   container just needs /nix/store + network access.
+# - No KVM device: the build is pure userspace.
+# - No cloud-init smoke step: NixOS doesn't use cloud-init's user-data
+#   format (it has its own openstack-init systemd service); a smoke
+#   adapted to read NixOS metadata can be layered on later if needed.
+
+on:
+  workflow_call:
+    inputs:
+      os_name:
+        description: 'OS / repo slug used as bucket prefix.'
+        type: string
+        required: true
+      version:
+        description: 'Version string. Defaults to github.ref_name.'
+        type: string
+        required: false
+        default: ''
+      output_filename:
+        description: 'Final qcow2 filename. The token {version} is substituted.'
+        type: string
+        required: true
+      build_script:
+        description: 'Path to caller script. Receives output dir as $1 and version as $2; must produce $1/<output_filename>.'
+        type: string
+        required: false
+        default: 'build/nix-build.sh'
+      runner_labels:
+        type: string
+        default: '["self-hosted","Linux","kvm"]'
+      build_container:
+        description: 'OCI image with Nix preinstalled. Default: nixos/nix (Alpine-based, multi-user mode disabled).'
+        type: string
+        default: 'nixos/nix:2.21.2'
+      builder_cert_identity:
+        description: 'Cosign --certificate-identity-regexp to verify the build_container signature against.'
+        type: string
+        default: '^https://github.com/stackopshq/libguestfs-tools-container/'
+      builder_oidc_issuer:
+        description: 'Cosign --certificate-oidc-issuer.'
+        type: string
+        default: 'https://token.actions.githubusercontent.com'
+      verify_builder:
+        description: 'Whether to verify the build_container cosign signature before pull.'
+        type: boolean
+        default: true
+      bucket_name:
+        description: 'Bucket name override (default: os_name; per-distro bucket model).'
+        type: string
+        default: ''
+      sign:
+        type: boolean
+        default: true
+      publish:
+        type: boolean
+        default: true
+      sync_latest:
+        type: boolean
+        default: true
+      cf_public_hostname:
+        type: string
+        default: 'images.openimages.cloud'
+      shared_actions_ref:
+        type: string
+        default: 'main'
+      variant:
+        description: 'Optional variant identifier when the caller matrix produces multiple builds for the same version. When set, MANIFEST.json and SHA256SUMS get a -<variant> suffix. See build-libguestfs-image.yml for details.'
+        type: string
+        required: false
+        default: ''
+
+    # See build-libguestfs-image.yml for rationale: all publish-related secrets
+    # are optional; runtime validation in the build job fails fast when
+    # publish=true and any are missing.
+    secrets:
+      S3_GARAGE_ENDPOINT: { required: false }
+      S3_GARAGE_KEY_ID:   { required: false }
+      S3_GARAGE_SECRET:   { required: false }
+      R2_ENDPOINT:        { required: false }
+      R2_KEY_ID:          { required: false }
+      R2_SECRET:          { required: false }
+      CF_ZONE_ID:         { required: false }
+      CF_API_TOKEN:       { required: false }
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless via GitHub OIDC
+
+jobs:
+  verify-builder:
+    name: Verify builder image signature
+    if: ${{ inputs.verify_builder }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      digest: ${{ steps.verify.outputs.digest }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x — matches builder)
+
+      - name: Verify cosign keyless signature
+        id: verify
+        env:
+          IMAGE: ${{ inputs.build_container }}
+          CERT_IDENTITY_REGEXP: ${{ inputs.builder_cert_identity }}
+          OIDC_ISSUER: ${{ inputs.builder_oidc_issuer }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          json=$(cosign verify "$IMAGE" \
+            --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer     "$OIDC_ISSUER" \
+            --output json)
+          echo "::group::Cosign verification payloads"
+          echo "$json" | jq .
+          echo "::endgroup::"
+          digest=$(echo "$json" | jq -r '.[0].critical.image."docker-manifest-digest"')
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "::error::Could not extract digest from cosign output."
+            exit 1
+          fi
+          echo "Verified $IMAGE @ $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (Nix) ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
+    needs: verify-builder
+    if: ${{ always() && (needs.verify-builder.result == 'success' || needs.verify-builder.result == 'skipped') }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    container:
+      image: ${{ inputs.build_container }}
+      # Nix builds inside its own sandbox; the container itself does
+      # NOT need --privileged. `--user root` only because the GHA
+      # runner default-uid mapping under Podman is awkward, and Nix's
+      # multi-user mode wants /nix to be writable by the build user.
+      options: --user root
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      output_filename: ${{ steps.vars.outputs.output_filename }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Prep build container
+        # The reusable runs inside the caller-provided build_container.
+        # Default `nixos/nix` is Alpine-based; minimal Ubuntu/Debian
+        # alternatives are also valid. Both lack the basic tools that
+        # downstream actions assume:
+        #   - sigstore/cosign-installer needs `envsubst` (gettext-base
+        #     on Debian, gettext on Alpine)
+        #   - `git` is needed by actions/checkout in container mode
+        #   - `curl`, `ca-certificates`, `unzip`, `sudo` for general
+        #     fetches and the aws-cli installer in publish-image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y --no-install-recommends \
+              gettext-base ca-certificates curl git sudo unzip
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache \
+              gettext ca-certificates curl git sudo unzip bash
+          fi
+
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Checkout shared actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          repository: open-img-cloud/.github
+          ref: ${{ inputs.shared_actions_ref }}
+          path: .oic-shared
+
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_OUTPUT: ${{ inputs.output_filename }}
+        run: |
+          set -euo pipefail
+          version="$IN_VERSION"
+          if [[ -z "$version" ]]; then
+            version="${GITHUB_REF_NAME:-}"
+            version="${version#v}"
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not determine version."
+            exit 1
+          fi
+          output_filename="${IN_OUTPUT//\{version\}/$version}"
+          {
+            echo "version=$version"
+            echo "output_filename=$output_filename"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate publish secrets (fail fast when publish=true)
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          S3_GARAGE_ENDPOINT: ${{ secrets.S3_GARAGE_ENDPOINT }}
+          S3_GARAGE_KEY_ID: ${{ secrets.S3_GARAGE_KEY_ID }}
+          S3_GARAGE_SECRET: ${{ secrets.S3_GARAGE_SECRET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_KEY_ID: ${{ secrets.R2_KEY_ID }}
+          R2_SECRET: ${{ secrets.R2_SECRET }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -eo pipefail
+          missing=()
+          for var in S3_GARAGE_ENDPOINT S3_GARAGE_KEY_ID S3_GARAGE_SECRET \
+                     R2_ENDPOINT R2_KEY_ID R2_SECRET \
+                     CF_ZONE_ID CF_API_TOKEN; do
+            if [[ -z "${!var:-}" ]]; then
+              missing+=("$var")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::publish=true but the following org secrets are missing or empty: ${missing[*]}"
+            echo "::error::configure them at https://github.com/organizations/${{ github.repository_owner }}/settings/secrets/actions or set publish=false for a dry-run"
+            exit 1
+          fi
+          echo "All publish secrets present."
+
+      - name: Prepare build directory
+        shell: bash
+        run: mkdir -p build/output
+
+      - name: Run caller Nix build script
+        shell: bash
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$BUILD_SCRIPT" ]]; then
+            echo "::error::build_script not found: $BUILD_SCRIPT"
+            exit 1
+          fi
+          chmod +x "$BUILD_SCRIPT"
+          bash "$BUILD_SCRIPT" "$(pwd)/build/output" "$VERSION"
+
+      - name: Verify output exists
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          if [[ ! -f "$out" ]]; then
+            echo "::error::Expected output not produced: $out"
+            ls -la build/output/
+            exit 1
+          fi
+          ls -lh "$out"
+
+      - name: Generate checksums
+        id: checksum
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
+          sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
+          md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
+          sums_filename="SHA256SUMS"
+          if [[ -n "${VARIANT:-}" ]]; then
+            sums_filename="SHA256SUMS-${VARIANT}"
+          fi
+          sha256sum "$OUTPUT_FILENAME" > "$sums_filename"
+          sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x — matches builder)
+
+      - name: Cosign sign-blob (keyless)
+        if: ${{ inputs.sign }}
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cd build/output
+          # See build-libguestfs-image.yml for cosign 3.x bundle-only rationale.
+          cosign sign-blob "$OUTPUT_FILENAME" \
+            --bundle              "${OUTPUT_FILENAME}.bundle" \
+            --new-bundle-format=true \
+            --yes
+
+      - name: Generate MANIFEST.json
+        shell: bash
+        env:
+          OS_NAME: ${{ inputs.os_name }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+          SIGNED: ${{ inputs.sign }}
+          BUILDER_IMAGE: ${{ inputs.build_container }}
+          BUILDER_DIGEST: ${{ needs.verify-builder.outputs.digest }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          manifest_filename="MANIFEST.json"
+          if [[ -n "${VARIANT:-}" ]]; then
+            manifest_filename="MANIFEST-${VARIANT}.json"
+          fi
+          jq -n \
+            --arg name             "$OS_NAME" \
+            --arg version          "$VERSION" \
+            --arg variant          "$VARIANT" \
+            --arg filename         "$OUTPUT_FILENAME" \
+            --arg sha256           "$SHA256" \
+            --arg built_at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit           "${GITHUB_SHA}" \
+            --arg run_url          "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg builder_image    "$BUILDER_IMAGE" \
+            --arg builder_digest   "$BUILDER_DIGEST" \
+            --argjson signed       "${SIGNED}" \
+            '{
+              name: $name,
+              version: $version,
+              variant: (if $variant == "" then null else $variant end),
+              format: "qcow2",
+              filename: $filename,
+              sha256: $sha256,
+              built_at: $built_at,
+              commit: $commit,
+              build_url: $run_url,
+              builder_tool: "nix-flake",
+              builder: {
+                image: $builder_image,
+                digest: $builder_digest
+              },
+              signed: $signed,
+              bundle: (if $signed then ($filename + ".bundle") else null end)
+            }' > "$manifest_filename"
+
+      - name: Publish to Garage and R2
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/publish-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          artifacts_dir: build/output
+          bucket_name: ${{ inputs.bucket_name }}
+          also_latest: ${{ inputs.sync_latest }}
+          garage_endpoint: ${{ secrets.S3_GARAGE_ENDPOINT }}
+          garage_key_id: ${{ secrets.S3_GARAGE_KEY_ID }}
+          garage_secret: ${{ secrets.S3_GARAGE_SECRET }}
+          r2_endpoint: ${{ secrets.R2_ENDPOINT }}
+          r2_key_id: ${{ secrets.R2_KEY_ID }}
+          r2_secret: ${{ secrets.R2_SECRET }}
+
+      - name: Compute Cloudflare purge URL list
+        id: purge-paths
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        shell: bash
+        env:
+          HOST: ${{ inputs.cf_public_hostname }}
+          OS_NAME: ${{ inputs.os_name }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          base="https://${HOST}/${OS_NAME}/latest"
+          {
+            echo "${base}/"
+            echo "${base}/index.html"
+            echo "${base}/${OUTPUT_FILENAME}"
+            echo "${base}/${OUTPUT_FILENAME}.bundle"
+            echo "${base}/${OUTPUT_FILENAME}.sha256"
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${base}/MANIFEST-${VARIANT}.json"
+              echo "${base}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${base}/MANIFEST.json"
+              echo "${base}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/"
+          } > /tmp/purge-paths.txt
+          {
+            echo 'paths<<PURGE_EOF'
+            cat /tmp/purge-paths.txt
+            echo 'PURGE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Purge Cloudflare cache for latest/
+        if: ${{ inputs.publish && inputs.sync_latest }}
+        uses: ./.oic-shared/actions/cf-purge
+        with:
+          zone_id: ${{ secrets.CF_ZONE_ID }}
+          api_token: ${{ secrets.CF_API_TOKEN }}
+          paths: ${{ steps.purge-paths.outputs.paths }}
+
+      - name: Upload artifacts (CI debugging)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          path: build/output/
+          retention-days: 7
+          if-no-files-found: warn
