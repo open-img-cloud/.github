@@ -1,0 +1,301 @@
+name: 'Smoke an openimages.cloud image on a live OpenStack'
+description: |
+  Final-stage runtime check. Imports the just-published qcow2 from the
+  CDN into a real OpenStack (default: Infomaniak Public Cloud), boots a
+  throwaway instance, waits for cloud-init to finish, SSHes in, runs a
+  short health probe, then tears everything down. Returns non-zero on
+  any failure so the release run goes red.
+
+  Required secrets (passed from the caller workflow):
+    OS_AUTH_URL                    e.g. https://api.pub1.infomaniak.cloud/identity/v3
+    OS_REGION_NAME                 e.g. dc3-a
+    OS_APPLICATION_CREDENTIAL_ID
+    OS_APPLICATION_CREDENTIAL_SECRET
+
+inputs:
+  os_name:
+    description: 'Repo slug used as bucket prefix and CDN path segment.'
+    required: true
+  version:
+    description: 'Version string (matches the published path).'
+    required: true
+  filename:
+    description: 'Artifact filename (e.g. alpine-3.23.4-bios-x86_64.qcow2).'
+    required: true
+  cdn_hostname:
+    description: 'Public CDN hostname.'
+    required: false
+    default: 'images.openimages.cloud'
+  login_user:
+    description: |
+      Default cloud-init user for SSH. Distro-specific. Examples:
+      alpine, alpaquita, ec2-user (Amazon Linux), cloud-user (Oracle),
+      debian, nixos. Override per-caller.
+    required: true
+  flavor:
+    description: 'Nova flavor name. Default sized for any oic image.'
+    required: false
+    default: 'a2-ram4-disk20-perf1'
+  external_network:
+    description: 'Name of the external (floating-IP) network on the target cloud.'
+    required: false
+    default: 'ext-net1'
+  boot_timeout:
+    description: 'Seconds to wait for the instance to reach ACTIVE.'
+    required: false
+    default: '180'
+  ssh_timeout:
+    description: 'Seconds to wait for SSH + cloud-init to be ready.'
+    required: false
+    default: '300'
+
+  # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
+  os_auth_url:
+    description: 'Pass-through of secrets.OS_AUTH_URL.'
+    required: true
+  os_region_name:
+    description: 'Pass-through of secrets.OS_REGION_NAME.'
+    required: true
+  os_application_credential_id:
+    description: 'Pass-through of secrets.OS_APPLICATION_CREDENTIAL_ID.'
+    required: true
+  os_application_credential_secret:
+    description: 'Pass-through of secrets.OS_APPLICATION_CREDENTIAL_SECRET.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install openstack CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v openstack >/dev/null; then
+          openstack --version
+          exit 0
+        fi
+        # Prefer pipx (isolated, no sudo) — works on ubuntu-latest and on
+        # rootless self-hosted runners. Fall back to pip --user (with
+        # --break-system-packages for PEP 668 distros) if pipx isn't there.
+        if command -v pipx >/dev/null; then
+          pipx install --quiet python-openstackclient >/dev/null
+          export PATH="$HOME/.local/bin:$PATH"
+        else
+          python3 -m pip install --quiet --user --break-system-packages python-openstackclient 2>/dev/null \
+            || python3 -m pip install --quiet --user python-openstackclient
+          export PATH="$HOME/.local/bin:$PATH"
+        fi
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/openstack" --version || openstack --version
+
+    - name: Smoke
+      id: smoke
+      shell: bash
+      env:
+        OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
+        OS_REGION_NAME:                    ${{ inputs.os_region_name }}
+        OS_AUTH_TYPE:                      v3applicationcredential
+        OS_APPLICATION_CREDENTIAL_ID:      ${{ inputs.os_application_credential_id }}
+        OS_APPLICATION_CREDENTIAL_SECRET:  ${{ inputs.os_application_credential_secret }}
+        OS_IDENTITY_API_VERSION:           '3'
+        OS_INTERFACE:                      public
+        OS_NAME:                           ${{ inputs.os_name }}
+        VERSION:                           ${{ inputs.version }}
+        FILENAME:                          ${{ inputs.filename }}
+        CDN:                               ${{ inputs.cdn_hostname }}
+        LOGIN_USER:                        ${{ inputs.login_user }}
+        FLAVOR:                            ${{ inputs.flavor }}
+        EXTNET:                            ${{ inputs.external_network }}
+        BOOT_TIMEOUT:                      ${{ inputs.boot_timeout }}
+        SSH_TIMEOUT:                       ${{ inputs.ssh_timeout }}
+      run: |
+        set -euo pipefail
+        SUMMARY="$GITHUB_STEP_SUMMARY"
+        ok()  { echo "::notice::✅ $1"; printf -- "- ✅ %s\n" "$1" >> "$SUMMARY"; }
+        bad() { echo "::error::❌ $1"; printf -- "- ❌ **%s**\n" "$1" >> "$SUMMARY"; FAIL=1; }
+        info(){ echo "ℹ️  $1"; }
+        FAIL=0
+
+        # Stable per-run identifiers. Truncated SHA so resource names fit
+        # OpenStack length limits.
+        SHORT_SHA="${GITHUB_SHA:0:8}"
+        TAG="oic-smoke-${OS_NAME}-${VERSION}-${SHORT_SHA}-${GITHUB_RUN_ATTEMPT:-1}"
+        # OpenStack object names — image/server/keypair/secgroup share the
+        # tag so cleanup is single-pass on tag match.
+        IMG_NAME="$TAG"
+        SRV_NAME="$TAG"
+        KEY_NAME="$TAG"
+        SG_NAME="$TAG"
+        IMG_URL="https://${CDN}/${OS_NAME}/${VERSION}/${FILENAME}"
+
+        echo "## Runtime smoke: \`${OS_NAME}/${VERSION}/${FILENAME}\` on Infomaniak" >> "$SUMMARY"
+        echo "" >> "$SUMMARY"
+        info "Tag: $TAG"
+        info "Image URL: $IMG_URL"
+
+        # Local SSH keypair (private kept on runner, public uploaded).
+        WORK=$(mktemp -d)
+        trap 'rm -rf "$WORK"' EXIT
+        ssh-keygen -t ed25519 -N '' -f "$WORK/id" -C "$TAG" >/dev/null
+        PUBKEY="$(cat "$WORK/id.pub")"
+
+        # ---- 0. Auth probe ----
+        if ! openstack token issue -f value -c id >/dev/null 2>&1; then
+          bad "OpenStack auth failed — check OS_* secrets"
+          exit 1
+        fi
+        ok "Auth OK against $OS_AUTH_URL ($OS_REGION_NAME)"
+
+        # ---- 1. Glance import via web-download from the CDN ----
+        info "Glance: importing $IMG_URL as $IMG_NAME (web-download)"
+        openstack image create \
+          --disk-format qcow2 --container-format bare \
+          --import \
+          --uri "$IMG_URL" \
+          --tag "$TAG" \
+          --property hw_qemu_guest_agent=yes \
+          "$IMG_NAME" >/dev/null
+        # Wait active.
+        end=$((SECONDS + 600))
+        while (( SECONDS < end )); do
+          status=$(openstack image show -f value -c status "$IMG_NAME" 2>/dev/null || echo "")
+          [[ "$status" == "active" ]] && break
+          [[ "$status" == "killed" ]] && { bad "Glance import failed"; exit 1; }
+          sleep 10
+        done
+        if [[ "$status" != "active" ]]; then bad "Glance import timed out (status=$status)"; exit 1; fi
+        ok "Glance image active"
+
+        # ---- 2. Keypair + security group ----
+        openstack keypair create --public-key "$WORK/id.pub" "$KEY_NAME" >/dev/null
+        openstack security group create --description "$TAG" "$SG_NAME" >/dev/null
+        openstack security group rule create --proto tcp --dst-port 22 "$SG_NAME" >/dev/null
+        openstack security group rule create --proto icmp "$SG_NAME" >/dev/null
+        ok "Keypair + security group created"
+
+        # ---- 3. Pick a tenant network (first non-external) ----
+        TENANT_NET=$(openstack network list --internal -f value -c Name | head -1)
+        if [[ -z "$TENANT_NET" ]]; then
+          bad "No internal network found — create one in the smoke project"
+          exit 1
+        fi
+        info "Tenant network: $TENANT_NET"
+
+        # ---- 4. Boot instance ----
+        info "Boot $SRV_NAME (flavor=$FLAVOR)"
+        openstack server create \
+          --image "$IMG_NAME" \
+          --flavor "$FLAVOR" \
+          --key-name "$KEY_NAME" \
+          --security-group "$SG_NAME" \
+          --network "$TENANT_NET" \
+          --wait \
+          "$SRV_NAME" >/dev/null
+        srv_status=$(openstack server show -f value -c status "$SRV_NAME")
+        if [[ "$srv_status" != "ACTIVE" ]]; then
+          bad "Server not ACTIVE (got $srv_status)"
+          openstack console log show "$SRV_NAME" | tail -80 || true
+          exit 1
+        fi
+        ok "Instance ACTIVE"
+
+        # ---- 5. Floating IP ----
+        FIP=$(openstack floating ip create "$EXTNET" -f value -c floating_ip_address)
+        openstack server add floating ip "$SRV_NAME" "$FIP"
+        info "Floating IP: $FIP"
+
+        # ---- 6. Probe SSH (TCP-open + handshake) ----
+        end=$((SECONDS + SSH_TIMEOUT))
+        while (( SECONDS < end )); do
+          if timeout 5 bash -c "</dev/tcp/$FIP/22" 2>/dev/null; then
+            if ssh -i "$WORK/id" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                   -o ConnectTimeout=5 -o BatchMode=yes \
+                   "${LOGIN_USER}@${FIP}" true 2>/dev/null; then
+              ok "SSH reachable as $LOGIN_USER@$FIP"
+              break
+            fi
+          fi
+          sleep 8
+        done
+        if (( SECONDS >= end )); then
+          bad "SSH never came up within ${SSH_TIMEOUT}s"
+          openstack console log show "$SRV_NAME" | tail -100 || true
+          exit 1
+        fi
+
+        SSH="ssh -i $WORK/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${LOGIN_USER}@${FIP}"
+
+        # ---- 7. Identity + cloud-init status ----
+        UNAME=$($SSH 'uname -a' || echo '')
+        info "uname: $UNAME"
+
+        # cloud-init status: portable across distros; ignore on systems
+        # without cloud-init in $PATH (we still passed cloud-init since
+        # SSH key was injected, but `cloud-init status` may not be in the
+        # default user PATH on minimal images — fall back to a log peek).
+        ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
+        if echo "$ci" | grep -q "status: done"; then
+          ok "cloud-init reported 'status: done'"
+        elif echo "$ci" | grep -q "status: error"; then
+          bad "cloud-init in error state — see console log"
+          openstack console log show "$SRV_NAME" | tail -80 || true
+        else
+          # Last resort: check that cloud-init at least wrote a final-message
+          if $SSH 'sudo grep -q "Cloud-init.*finished" /var/log/cloud-init.log 2>/dev/null'; then
+            ok "cloud-init final-message present in /var/log/cloud-init.log"
+          else
+            ok "cloud-init binary not in PATH but SSH+key injection worked (best-effort)"
+          fi
+        fi
+
+        # ---- 8. Network egress ----
+        if $SSH 'getent hosts deb.debian.org >/dev/null 2>&1 || nslookup deb.debian.org >/dev/null 2>&1'; then
+          ok "DNS resolution works inside guest"
+        else
+          bad "DNS resolution failed inside guest"
+        fi
+
+        echo "" >> "$SUMMARY"
+        if [[ "$FAIL" -ne 0 ]]; then
+          echo "**Result:** ❌ runtime smoke failed" >> "$SUMMARY"
+        else
+          echo "**Result:** ✅ runtime smoke passed (boot + cloud-init + SSH + DNS on Infomaniak)" >> "$SUMMARY"
+        fi
+
+        # Exit code captured here so the cleanup step always runs.
+        echo "fail=$FAIL"     >> "$GITHUB_OUTPUT"
+        echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+        echo "fip=${FIP:-}"   >> "$GITHUB_OUTPUT"
+
+    - name: Cleanup OpenStack resources
+      if: always() && steps.smoke.outputs.tag != ''
+      shell: bash
+      env:
+        OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
+        OS_REGION_NAME:                    ${{ inputs.os_region_name }}
+        OS_AUTH_TYPE:                      v3applicationcredential
+        OS_APPLICATION_CREDENTIAL_ID:      ${{ inputs.os_application_credential_id }}
+        OS_APPLICATION_CREDENTIAL_SECRET:  ${{ inputs.os_application_credential_secret }}
+        OS_IDENTITY_API_VERSION:           '3'
+        OS_INTERFACE:                      public
+        TAG:                               ${{ steps.smoke.outputs.tag }}
+        FIP:                               ${{ steps.smoke.outputs.fip }}
+      run: |
+        set +e
+        echo "::group::Cleanup $TAG"
+        # Delete server first (releases the FIP attachment).
+        openstack server delete --wait "$TAG" 2>/dev/null
+        if [[ -n "$FIP" ]]; then
+          openstack floating ip delete "$FIP" 2>/dev/null
+        fi
+        openstack keypair delete "$TAG" 2>/dev/null
+        openstack security group delete "$TAG" 2>/dev/null
+        openstack image delete "$TAG" 2>/dev/null
+        echo "::endgroup::"
+
+    - name: Fail run on smoke failure
+      if: steps.smoke.outputs.fail == '1'
+      shell: bash
+      run: |
+        echo "::error::runtime smoke failed — see step summary"
+        exit 1

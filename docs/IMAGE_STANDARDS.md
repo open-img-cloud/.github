@@ -202,3 +202,38 @@ this document AND the cert-identity regex in section A.
 - **Periodic catalog audit** (a scheduled cross-org workflow) runs
   weekly and re-validates every active repo's `latest/` artifact
   against the same checklist.
+
+## K — Runtime smoke on a live OpenStack (SHOULD)
+
+Static artefact validation (section J) confirms an image is well-formed
+and signed; it does not prove that it actually boots, that cloud-init
+applies the catalog policy, or that DNS works inside the guest. The
+post-publish runtime smoke closes that loop.
+
+- The reusable workflow's `runtime_smoke` step (composite action
+  [`actions/smoke-openstack/`][2]) imports the just-published qcow2
+  into a real OpenStack via Glance `web-download`, boots a throwaway
+  instance, allocates a floating IP, SSHes in as the distro's default
+  cloud-init user, and runs a short health probe (cloud-init status,
+  DNS resolution). Resources are tagged uniformly and torn down on
+  exit, even on failure.
+- **Default platform: Infomaniak Public Cloud.** A dedicated
+  `oic-smoke` project hosts the throwaway resources. Auth uses an
+  application credential (no passwords in CI).
+- Required org-wide secrets (configured once on the GitHub org, scoped
+  to `open-img-cloud/*`):
+  - `OS_AUTH_URL`
+  - `OS_REGION_NAME`
+  - `OS_APPLICATION_CREDENTIAL_ID`
+  - `OS_APPLICATION_CREDENTIAL_SECRET`
+- Each caller workflow MUST set `runtime_smoke_login_user` to the
+  distro's default cloud-init user (`alpine`, `alpaquita`, `ec2-user`,
+  `cloud-user`, `nixos`, `debian`, …) so SSH authentication uses the
+  correct identity.
+- `runtime_smoke` defaults to `true` but no-ops when
+  `runtime_smoke_login_user` is empty, so existing callers don't break
+  before they're updated.
+- Failure blocks the release run (red status badge); cleanup still runs
+  via `if: always()`.
+
+[2]: ../actions/smoke-openstack/

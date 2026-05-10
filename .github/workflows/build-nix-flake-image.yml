@@ -81,6 +81,15 @@ on:
         type: string
         required: false
         default: ''
+      runtime_smoke:
+        description: 'Run the post-publish runtime smoke (boot the just-published qcow2 on Infomaniak Public Cloud, SSH in, verify cloud-init). Requires the OS_* secrets and `publish: true` to actually exercise.'
+        type: boolean
+        default: true
+      runtime_smoke_login_user:
+        description: 'Default cloud-init login user used by the runtime smoke (e.g. nixos for NixOS images).'
+        type: string
+        required: false
+        default: ''
 
     # See build-libguestfs-image.yml for rationale: all publish-related secrets
     # are optional; runtime validation in the build job fails fast when
@@ -94,6 +103,10 @@ on:
       R2_SECRET:          { required: false }
       CF_ZONE_ID:         { required: false }
       CF_API_TOKEN:       { required: false }
+      OS_AUTH_URL:                       { required: false }
+      OS_REGION_NAME:                    { required: false }
+      OS_APPLICATION_CREDENTIAL_ID:      { required: false }
+      OS_APPLICATION_CREDENTIAL_SECRET:  { required: false }
 
 permissions:
   contents: read
@@ -420,6 +433,20 @@ jobs:
           version: ${{ steps.vars.outputs.version }}
           filename: ${{ steps.vars.outputs.output_filename }}
           cdn_hostname: ${{ inputs.cf_public_hostname }}
+
+      - name: Runtime smoke on Infomaniak Public Cloud
+        if: ${{ inputs.publish && inputs.runtime_smoke && inputs.runtime_smoke_login_user != '' }}
+        uses: ./.oic-shared/actions/smoke-openstack
+        with:
+          os_name:                          ${{ inputs.os_name }}
+          version:                          ${{ steps.vars.outputs.version }}
+          filename:                         ${{ steps.vars.outputs.output_filename }}
+          cdn_hostname:                     ${{ inputs.cf_public_hostname }}
+          login_user:                       ${{ inputs.runtime_smoke_login_user }}
+          os_auth_url:                      ${{ secrets.OS_AUTH_URL }}
+          os_region_name:                   ${{ secrets.OS_REGION_NAME }}
+          os_application_credential_id:     ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          os_application_credential_secret: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
 
       - name: Upload artifacts (CI debugging)
         if: always()
