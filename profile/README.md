@@ -28,6 +28,7 @@
 | Amazon Linux 2    | `2.0.20260508.0`     | —            | 📦 Maintenance only<sup>1</sup> | [`amazon-linux-2`](https://github.com/open-img-cloud/amazon-linux-2) |
 | Amazon Linux 2023 | `2023.11.20260509.0` | —            | ✅ Stable             | [`amazon-linux-2023`](https://github.com/open-img-cloud/amazon-linux-2023) |
 | Gentoo Linux      | `2026.05.03`         | —            | 🚧 Build pipeline WIP | [`gentoo-linux`](https://github.com/open-img-cloud/gentoo-linux) |
+| NixOS             | `25.11`              | —            | ✅ Stable             | [`nixos`](https://github.com/open-img-cloud/nixos) |
 | Oracle Linux 9    | `9.7-b269`           | —            | ✅ Stable             | [`oracle-linux-9`](https://github.com/open-img-cloud/oracle-linux-9) |
 | Oracle Linux 10   | `10.1-b270`          | —            | ✅ Stable             | [`oracle-linux-10`](https://github.com/open-img-cloud/oracle-linux-10) |
 
@@ -35,9 +36,11 @@
 
 ### OpenStack components
 
-| Component       | Latest    | Status      | Repository |
-|-----------------|-----------|-------------|------------|
-| Octavia Amphora | `2025.2`  | ✅ Stable   | [`octavia-amphora`](https://github.com/open-img-cloud/octavia-amphora) |
+| Component       | Latest    | Older releases       | Status     | Repository |
+|-----------------|-----------|----------------------|------------|------------|
+| Octavia Amphora | `2026.1`  | `2025.2`, `2025.1`   | ✅ Stable  | [`octavia-amphora`](https://github.com/open-img-cloud/octavia-amphora) |
+
+> Octavia images are pinned to the matching OpenStack release; older paths stay immutable on the registry so you can keep targeting the OpenStack release of your existing deployment.
 
 ### Windows
 
@@ -87,7 +90,7 @@ Storage topology: [Garage](https://garagehq.deuxfleurs.fr) (self-hosted S3, sour
 
 The infrastructure, workflows, and tooling published in this org are released under permissive open-source licenses (Apache-2.0 / MIT depending on the repo — see each repository's `LICENSE` file).
 
-⚠️ **The OS images themselves inherit the licensing terms of their upstream distributions** (Alpine, Amazon Linux, Oracle Linux, etc.). Review the original licenses before using any image in production.
+⚠️ **The OS images themselves inherit the licensing terms of their upstream distributions** (Alpine, Amazon Linux, NixOS, Oracle Linux, etc.). Review the original licenses before using any image in production.
 
 ---
 
