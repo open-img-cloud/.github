@@ -66,7 +66,23 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Probe smoke prerequisites
+      id: prereq
+      shell: bash
+      env:
+        OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
+        OS_APPLICATION_CREDENTIAL_ID:      ${{ inputs.os_application_credential_id }}
+        OS_APPLICATION_CREDENTIAL_SECRET:  ${{ inputs.os_application_credential_secret }}
+      run: |
+        if [[ -z "${OS_AUTH_URL:-}" || -z "${OS_APPLICATION_CREDENTIAL_ID:-}" || -z "${OS_APPLICATION_CREDENTIAL_SECRET:-}" ]]; then
+          echo "::notice::Runtime smoke skipped — OS_AUTH_URL / OS_APPLICATION_CREDENTIAL_* secrets not configured. Add them at the org level (open-img-cloud) to enable the smoke."
+          echo "should_run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "should_run=true"  >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Install openstack CLI
+      if: steps.prereq.outputs.should_run == 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -90,6 +106,7 @@ runs:
 
     - name: Smoke
       id: smoke
+      if: steps.prereq.outputs.should_run == 'true'
       shell: bash
       env:
         OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
@@ -268,7 +285,7 @@ runs:
         echo "fip=${FIP:-}"   >> "$GITHUB_OUTPUT"
 
     - name: Cleanup OpenStack resources
-      if: always() && steps.smoke.outputs.tag != ''
+      if: always() && steps.prereq.outputs.should_run == 'true' && steps.smoke.outputs.tag != ''
       shell: bash
       env:
         OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
