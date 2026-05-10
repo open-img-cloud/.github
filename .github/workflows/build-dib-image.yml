@@ -141,7 +141,12 @@ jobs:
     container:
       image: ${{ inputs.build_container }}
       # --privileged required for DIB's loop mounts / chroot / mkfs.
-      options: --device=/dev/kvm --privileged
+      # `--user root` is needed because the GHA runner under Podman maps
+      # the job to the runner user by default, but DIB needs uid 0 to
+      # mount/umount and fchmod /dev/* in the chroot.
+      # No --device=/dev/kvm: DIB doesn't need nested KVM (it builds via
+      # debootstrap + chroot, not by running a VM).
+      options: --privileged --user root
     outputs:
       version: ${{ steps.vars.outputs.version }}
       output_filename: ${{ steps.vars.outputs.output_filename }}
