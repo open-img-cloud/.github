@@ -41,6 +41,10 @@ on:
         type: string
         required: false
         default: 'build/customize.sh'
+      oic_policy_drop_in:
+        description: 'Inject the org-wide cloud-init policy drop-in (datasource_list, disable_root, ssh_pwauth=false, mount_default_fields) into /etc/cloud/cloud.cfg.d/99_oic-policy.cfg AFTER the caller customize_script. Set to false for distros that do not use cloud-init (none today; nixos / freebsd will route through different reusables).'
+        type: boolean
+        default: true
       run_sysprep:
         description: 'Whether to run virt-sysprep before sparsify.'
         type: boolean
@@ -310,6 +314,31 @@ jobs:
           fi
           chmod +x "$CUSTOMIZE_SCRIPT"
           bash "$CUSTOMIZE_SCRIPT" "$(pwd)/build/work/working.qcow2"
+
+      - name: Inject org-wide cloud-init policy drop-in
+        # Drop-in 99_oic-policy.cfg is shared across all openimages.cloud
+        # cloud-init-based distros — datasource_list, disable_root,
+        # ssh_pwauth=false, mount_default_fields. Lives in
+        # `templates/cloud.cfg.d/` of the shared `open-img-cloud/.github`
+        # repo so a single change propagates to every distro on next
+        # build. Cloud-init merges drop-ins on top of the upstream
+        # cloud.cfg without disturbing distro-curated module orderings.
+        if: ${{ inputs.oic_policy_drop_in }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy_src=".oic-shared/templates/cloud.cfg.d/99_oic-policy.cfg"
+          if [[ ! -f "$policy_src" ]]; then
+            echo "::error::oic policy drop-in not found at $policy_src"
+            exit 1
+          fi
+          # `--mkdir` first: some upstream images don't ship the drop-in
+          # directory (cloud.cfg.d/) by default; virt-customize would
+          # fail copy-in to a non-existent target.
+          virt-customize -a "$(pwd)/build/work/working.qcow2" \
+            --mkdir /etc/cloud/cloud.cfg.d \
+            --copy-in "$policy_src:/etc/cloud/cloud.cfg.d/"
+          echo "::notice::Injected 99_oic-policy.cfg into /etc/cloud/cloud.cfg.d/"
 
       - name: virt-sysprep
         if: ${{ inputs.run_sysprep }}
