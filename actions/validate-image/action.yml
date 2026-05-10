@@ -18,6 +18,10 @@ inputs:
   filename:
     description: 'Artifact filename (e.g. alpine-3.23.4-bios-x86_64.qcow2).'
     required: true
+  variant:
+    description: 'Optional variant slug. When set, the MANIFEST is read from MANIFEST-<variant>.json instead of MANIFEST.json (matches the multi-variant scheme in build-libguestfs-image.yml).'
+    required: false
+    default: ''
   cdn_hostname:
     description: 'Public CDN hostname.'
     required: false
@@ -47,6 +51,7 @@ runs:
         OS_NAME:    ${{ inputs.os_name }}
         VERSION:    ${{ inputs.version }}
         FILENAME:   ${{ inputs.filename }}
+        VARIANT:    ${{ inputs.variant }}
         CDN:        ${{ inputs.cdn_hostname }}
         CERT_RE:    ${{ inputs.cert_identity_regexp }}
         OIDC_ISS:   ${{ inputs.cert_oidc_issuer }}
@@ -55,6 +60,14 @@ runs:
         set -euo pipefail
         BASE="https://${CDN}/${OS_NAME}/${VERSION}"
         LATEST="https://${CDN}/${OS_NAME}/latest"
+        # Variant-aware MANIFEST filename. Stays MANIFEST.json for the
+        # common single-variant case; switches to MANIFEST-<variant>.json
+        # when the caller passes a variant (alpaquita glibc/musl,
+        # alpine bios/uefi, …).
+        MANIFEST_NAME="MANIFEST.json"
+        if [[ -n "$VARIANT" ]]; then
+          MANIFEST_NAME="MANIFEST-${VARIANT}.json"
+        fi
         FAIL=0
         SUMMARY="$GITHUB_STEP_SUMMARY"
 
@@ -66,11 +79,11 @@ runs:
         echo "" >> "$SUMMARY"
 
         # ---- A. MANIFEST.json fetchable + required keys ----
-        info "Fetching MANIFEST.json"
-        if ! curl -fsSLO --output-dir /tmp "$BASE/MANIFEST.json"; then
-          bad "MANIFEST.json missing at $BASE/MANIFEST.json"
+        info "Fetching $MANIFEST_NAME"
+        if ! curl -fsSLO --output-dir /tmp "$BASE/$MANIFEST_NAME"; then
+          bad "$MANIFEST_NAME missing at $BASE/$MANIFEST_NAME"
         else
-          MANIFEST=/tmp/MANIFEST.json
+          MANIFEST="/tmp/$MANIFEST_NAME"
           for k in name version filename sha256 built_at commit build_url builder_tool builder signed bundle; do
             if jq -e --arg k "$k" 'has($k)' "$MANIFEST" >/dev/null; then
               ok "MANIFEST has key '$k'"

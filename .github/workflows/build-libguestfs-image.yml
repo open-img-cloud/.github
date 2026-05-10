@@ -777,6 +777,7 @@ jobs:
               built_at: $built_at,
               commit: $commit,
               build_url: $run_url,
+              builder_tool: "libguestfs",
               builder: {
                 image: $builder_image,
                 digest: $builder_digest
@@ -862,6 +863,7 @@ jobs:
           os_name: ${{ inputs.os_name }}
           version: ${{ steps.vars.outputs.version }}
           filename: ${{ steps.vars.outputs.output_filename }}
+          variant: ${{ inputs.variant }}
           cdn_hostname: ${{ inputs.cf_public_hostname }}
 
       - name: Upload artifacts (CI debugging, 7-day retention)
