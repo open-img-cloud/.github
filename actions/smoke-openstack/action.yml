@@ -37,9 +37,9 @@ inputs:
     required: false
     default: 'a2-ram4-disk20-perf1'
   external_network:
-    description: 'Name of the external (floating-IP) network on the target cloud.'
+    description: 'Name of the external (floating-IP) network on the target cloud. Default matches Infomaniak Public Cloud.'
     required: false
-    default: 'ext-net1'
+    default: 'ext-floating1'
   boot_timeout:
     description: 'Seconds to wait for the instance to reach ACTIVE.'
     required: false
