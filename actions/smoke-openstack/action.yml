@@ -140,6 +140,11 @@ runs:
         # OpenStack length limits.
         SHORT_SHA="${GITHUB_SHA:0:8}"
         TAG="oic-smoke-${OS_NAME}-${VERSION}-${SHORT_SHA}-${GITHUB_RUN_ATTEMPT:-1}"
+        # Sanitize: Nova rejects '.' (and friends) in keypair names. The
+        # universal-safe charset across image/server/keypair/security
+        # group on most clouds is [a-zA-Z0-9_-]. Replace anything else
+        # with '-' so versions like 3.23.4 don't poison the keypair call.
+        TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_-' '-')"
         # OpenStack object names — image/server/keypair/secgroup share the
         # tag so cleanup is single-pass on tag match.
         IMG_NAME="$TAG"
@@ -147,6 +152,11 @@ runs:
         KEY_NAME="$TAG"
         SG_NAME="$TAG"
         IMG_URL="https://${CDN}/${OS_NAME}/${VERSION}/${FILENAME}"
+
+        # Publish the tag as a step output BEFORE any provisioning so the
+        # Cleanup step still runs (and removes whatever did get created)
+        # if a later command fails.
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
         echo "## Runtime smoke: \`${OS_NAME}/${VERSION}/${FILENAME}\` on Infomaniak" >> "$SUMMARY"
         echo "" >> "$SUMMARY"
@@ -303,8 +313,8 @@ runs:
         fi
 
         # Exit code captured here so the cleanup step always runs.
+        # (tag was exported earlier so cleanup also runs on partial-failure paths.)
         echo "fail=$FAIL"     >> "$GITHUB_OUTPUT"
-        echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
         echo "fip=${FIP:-}"   >> "$GITHUB_OUTPUT"
 
     - name: Cleanup OpenStack resources
