@@ -166,21 +166,41 @@ runs:
         fi
         ok "Auth OK against $OS_AUTH_URL ($OS_REGION_NAME)"
 
-        # ---- 1. Glance import via web-download from the CDN ----
-        info "Glance: importing $IMG_URL as $IMG_NAME (web-download)"
+        # ---- 1. Glance: create record, then web-download (fall back to local upload if unsupported) ----
+        info "Glance: creating image record $IMG_NAME"
         openstack image create \
           --disk-format qcow2 --container-format bare \
-          --import \
-          --uri "$IMG_URL" \
           --tag "$TAG" \
           --property hw_qemu_guest_agent=yes \
           "$IMG_NAME" >/dev/null
+
+        info "Glance: triggering web-download import from $IMG_URL"
+        if openstack image import \
+            --import-method web-download \
+            --uri "$IMG_URL" \
+            "$IMG_NAME" 2>/tmp/img-import.err; then
+          info "web-download import accepted"
+        else
+          # Cloud doesn't allow web-download → fetch locally and upload via --file.
+          info "web-download unavailable on this cloud — falling back to fetch + re-upload"
+          cat /tmp/img-import.err >&2 || true
+          openstack image delete "$IMG_NAME" >/dev/null 2>&1 || true
+          curl -fsSL "$IMG_URL" -o "/tmp/${FILENAME}"
+          openstack image create \
+            --disk-format qcow2 --container-format bare \
+            --file "/tmp/${FILENAME}" \
+            --tag "$TAG" \
+            --property hw_qemu_guest_agent=yes \
+            "$IMG_NAME" >/dev/null
+          rm -f "/tmp/${FILENAME}"
+        fi
+
         # Wait active.
         end=$((SECONDS + 600))
         while (( SECONDS < end )); do
           status=$(openstack image show -f value -c status "$IMG_NAME" 2>/dev/null || echo "")
           [[ "$status" == "active" ]] && break
-          [[ "$status" == "killed" ]] && { bad "Glance import failed"; exit 1; }
+          [[ "$status" == "killed" ]] && { bad "Glance import failed (status=killed)"; exit 1; }
           sleep 10
         done
         if [[ "$status" != "active" ]]; then bad "Glance import timed out (status=$status)"; exit 1; fi
