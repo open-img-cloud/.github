@@ -136,10 +136,11 @@ runs:
         info(){ echo "ℹ️  $1"; }
         FAIL=0
 
-        # Stable per-run identifiers. Truncated SHA so resource names fit
-        # OpenStack length limits.
-        SHORT_SHA="${GITHUB_SHA:0:8}"
-        TAG="oic-smoke-${OS_NAME}-${VERSION}-${SHORT_SHA}-${GITHUB_RUN_ATTEMPT:-1}"
+        # Per-run unique identifier. GITHUB_RUN_ID is monotonic across the
+        # whole org so re-dispatches at the same commit never collide
+        # (which used to happen with SHORT_SHA + RUN_ATTEMPT and produce
+        # "More than one Image exists" at boot time).
+        TAG="oic-smoke-${OS_NAME}-${VERSION}-${GITHUB_RUN_ID:-local}"
         # Sanitize: Nova rejects '.' (and friends) in keypair names. The
         # universal-safe charset across image/server/keypair/security
         # group on most clouds is [a-zA-Z0-9_-]. Replace anything else
@@ -211,7 +212,12 @@ runs:
           # slow uplinks; that's expected.
           info "web-download unavailable on this cloud — falling back to fetch + re-upload"
           cat /tmp/img-import.err >&2 || true
-          openstack image delete "$IMG_NAME" >/dev/null 2>&1 || true
+          # Remove any pre-existing image record(s) with the same name —
+          # plain \`image delete <name>\` fails on multi-match, so iterate
+          # over IDs to be safe.
+          for id in $(openstack image list -f value -c ID --name "$IMG_NAME" 2>/dev/null); do
+            openstack image delete "$id" >/dev/null 2>&1 || true
+          done
           curl -fsSL "$IMG_URL" -o "/tmp/${FILENAME}"
           info "Uploading $(du -h /tmp/${FILENAME} | cut -f1) to Glance (synchronous)…"
           openstack image create \
@@ -341,14 +347,18 @@ runs:
       run: |
         set +e
         echo "::group::Cleanup $TAG"
-        # Delete server first (releases the FIP attachment).
+        # Server first (releases the FIP attachment).
         openstack server delete --wait "$TAG" 2>/dev/null
         if [[ -n "$FIP" ]]; then
           openstack floating ip delete "$FIP" 2>/dev/null
         fi
         openstack keypair delete "$TAG" 2>/dev/null
         openstack security group delete "$TAG" 2>/dev/null
-        openstack image delete "$TAG" 2>/dev/null
+        # Iterate by ID so duplicate-name leftovers from earlier failed
+        # runs at the same RUN_ID get purged in one pass.
+        for id in $(openstack image list -f value -c ID --name "$TAG" 2>/dev/null); do
+          openstack image delete "$id" 2>/dev/null
+        done
         echo "::endgroup::"
 
     - name: Fail run on smoke failure
