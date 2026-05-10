@@ -502,26 +502,25 @@ jobs:
 
           # 5. Wait until SSH answers with the marker file.
           # Two-phase loop so failures tell us *where* it broke:
-          #   Phase A — wait for an actual SSH banner (`SSH-...`) on the
-          #             port-forward. A naked TCP-open check false-positives
-          #             on qemu's user-mode SLIRP, which accepts host-side
-          #             connections before the guest is listening.
+          #   Phase A — wait for the host port-forward to even accept a TCP
+          #             handshake (proves qemu is alive and SLIRP is
+          #             routing). Note: this can false-positive on
+          #             SLIRP-only acceptance before the guest sshd is
+          #             listening — that's tolerable because phase B then
+          #             retries SSH every 5s until sshd is actually up.
           #   Phase B — wait for the cloud-init marker file via SSH (proves
           #             the user-data was actually applied).
           ssh_opts="-i $work/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR -p 2222 smoketest@127.0.0.1"
           deadline=$((SECONDS + TIMEOUT_S))
-          phase="banner"   # one of: banner, marker
+          phase="port"   # one of: port, marker
           tcp_ok=0
           marker_ok=0
           while (( SECONDS < deadline )); do
-            if [[ "$phase" == "banner" ]]; then
-              # Open a TCP connection and read the first line — sshd
-              # advertises `SSH-2.0-OpenSSH_*\r\n` immediately on connect.
-              # `timeout 3` caps the read so we don't block forever on a
-              # half-open SLIRP socket.
-              banner=$(timeout 3 bash -c 'exec 9<>/dev/tcp/127.0.0.1/2222 && head -c 32 <&9' 2>/dev/null || true)
-              if [[ "$banner" == SSH-* ]]; then
-                echo "Smoke phase A: SSH banner received at +$((SECONDS))s — '${banner%%$'\r'*}'"
+            if [[ "$phase" == "port" ]]; then
+              # bash /dev/tcp probe: opens then closes a TCP connection.
+              if (exec 9<>/dev/tcp/127.0.0.1/2222) 2>/dev/null; then
+                exec 9<&- 9>&- 2>/dev/null || true
+                echo "Smoke phase A: TCP 127.0.0.1:2222 is up at +$((SECONDS))s"
                 tcp_ok=1
                 phase="marker"
               fi
@@ -536,7 +535,7 @@ jobs:
           done
           if [[ "$marker_ok" -ne 1 ]]; then
             if [[ "$tcp_ok" -ne 1 ]]; then
-              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — no SSH banner on 127.0.0.1:2222 (guest did not boot, sshd not listening, networking down, or — for UEFI — wrong firmware)"
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — TCP 127.0.0.1:2222 never opened (guest did not boot, networking down, or — for UEFI — wrong firmware)"
             else
               echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (SSH auth failed, or cloud-init did not write the marker)"
               # Last-ditch verbose SSH attempt to surface the auth handshake
@@ -585,9 +584,11 @@ jobs:
               /etc/ssh/sshd_config.d \
               /etc/pam.d \
               /etc/network/interfaces \
+              /etc/runlevels \
               /home/smoketest \
               /var/log/cloud-init.log \
               /var/log/cloud-init-output.log \
+              /var/log/messages \
               "$work/postmortem" 2>&1 || true
             echo "--- /home/smoketest tree ---"
             ls -laR "$work/postmortem/smoketest" 2>&1 || true
@@ -606,8 +607,12 @@ jobs:
             done
             echo "--- /etc/network/interfaces ---"
             cat "$work/postmortem/interfaces" 2>&1 || true
+            echo "--- /etc/runlevels/ (services symlinks per runlevel) ---"
+            ls -la "$work/postmortem/runlevels/"*/ 2>&1 || true
             echo "--- /etc/pam.d/sshd ---"
             cat "$work/postmortem/pam.d/sshd" 2>&1 || true
+            echo "--- /var/log/messages (last 100 lines, syslog) ---"
+            tail -n 100 "$work/postmortem/messages" 2>&1 || true
             echo "--- /etc/pam.d/base-auth ---"
             cat "$work/postmortem/pam.d/base-auth" 2>&1 || true
             echo "--- /etc/pam.d/base-account ---"
