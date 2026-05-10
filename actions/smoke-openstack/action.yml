@@ -90,19 +90,22 @@ runs:
           openstack --version
           exit 0
         fi
-        # Prefer pipx (isolated, no sudo) — works on ubuntu-latest and on
-        # rootless self-hosted runners. Fall back to pip --user (with
-        # --break-system-packages for PEP 668 distros) if pipx isn't there.
-        if command -v pipx >/dev/null; then
-          pipx install --quiet python-openstackclient >/dev/null
-          export PATH="$HOME/.local/bin:$PATH"
-        else
-          python3 -m pip install --quiet --user --break-system-packages python-openstackclient 2>/dev/null \
-            || python3 -m pip install --quiet --user python-openstackclient
-          export PATH="$HOME/.local/bin:$PATH"
+        # The libguestfs builder image (ghcr.io/stackopshq/libguestfs-tools)
+        # ships python3 but not pip/pipx. Bootstrap pip via get-pip.py so
+        # the action works in any minimal container without pulling extra
+        # packages into the build image.
+        if ! python3 -c "import pip" 2>/dev/null; then
+          curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+          python3 /tmp/get-pip.py --quiet --no-warn-script-location
+          rm -f /tmp/get-pip.py
         fi
+        python3 -m pip install --quiet --no-warn-script-location \
+          --user --break-system-packages python-openstackclient 2>/dev/null \
+          || python3 -m pip install --quiet --no-warn-script-location \
+               --user python-openstackclient
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-        "$HOME/.local/bin/openstack" --version || openstack --version
+        export PATH="$HOME/.local/bin:$PATH"
+        openstack --version
 
     - name: Smoke
       id: smoke
