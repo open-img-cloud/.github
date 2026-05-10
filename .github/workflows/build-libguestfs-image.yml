@@ -429,7 +429,7 @@ jobs:
             - name: smoketest
               groups: [wheel]
               sudo: ["ALL=(ALL) NOPASSWD:ALL"]
-              shell: /bin/ash
+              shell: /bin/sh
               lock_passwd: false
               plain_text_passwd: smoketest
               ssh_authorized_keys:
