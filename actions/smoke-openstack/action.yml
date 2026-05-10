@@ -186,16 +186,34 @@ runs:
 
         info "Glance: triggering web-download import from $IMG_URL"
         if openstack image import \
-            --import-method web-download \
+            --method web-download \
             --uri "$IMG_URL" \
             "$IMG_NAME" 2>/tmp/img-import.err; then
-          info "web-download import accepted"
+          info "web-download import accepted — polling for status=active"
+          # Async path: image starts as 'queued', flips to 'importing',
+          # then 'active' once the cloud finishes pulling. Use a fresh
+          # deadline based on wall clock, NOT $SECONDS, so we get the
+          # full 10 min regardless of how long earlier work took.
+          deadline=$(( $(date +%s) + 600 ))
+          status=""
+          while (( $(date +%s) < deadline )); do
+            status=$(openstack image show -f value -c status "$IMG_NAME" 2>/dev/null || echo "")
+            [[ "$status" == "active" ]] && break
+            [[ "$status" == "killed" ]] && { bad "Glance import failed (status=killed)"; exit 1; }
+            sleep 10
+          done
+          if [[ "$status" != "active" ]]; then bad "Glance import timed out (status=$status)"; exit 1; fi
         else
-          # Cloud doesn't allow web-download → fetch locally and upload via --file.
+          # Cloud disallows web-download → fetch locally and upload via
+          # --file. \`image create --file\` is synchronous: when it
+          # returns successfully the image is already 'active', so no
+          # poll loop is needed. The upload itself can take minutes on
+          # slow uplinks; that's expected.
           info "web-download unavailable on this cloud — falling back to fetch + re-upload"
           cat /tmp/img-import.err >&2 || true
           openstack image delete "$IMG_NAME" >/dev/null 2>&1 || true
           curl -fsSL "$IMG_URL" -o "/tmp/${FILENAME}"
+          info "Uploading $(du -h /tmp/${FILENAME} | cut -f1) to Glance (synchronous)…"
           openstack image create \
             --disk-format qcow2 --container-format bare \
             --file "/tmp/${FILENAME}" \
@@ -204,16 +222,6 @@ runs:
             "$IMG_NAME" >/dev/null
           rm -f "/tmp/${FILENAME}"
         fi
-
-        # Wait active.
-        end=$((SECONDS + 600))
-        while (( SECONDS < end )); do
-          status=$(openstack image show -f value -c status "$IMG_NAME" 2>/dev/null || echo "")
-          [[ "$status" == "active" ]] && break
-          [[ "$status" == "killed" ]] && { bad "Glance import failed (status=killed)"; exit 1; }
-          sleep 10
-        done
-        if [[ "$status" != "active" ]]; then bad "Glance import timed out (status=$status)"; exit 1; fi
         ok "Glance image active"
 
         # ---- 2. Keypair + security group ----
