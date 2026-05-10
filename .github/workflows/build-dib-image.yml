@@ -152,6 +152,27 @@ jobs:
       output_filename: ${{ steps.vars.outputs.output_filename }}
       sha256: ${{ steps.checksum.outputs.sha256 }}
     steps:
+      - name: Prep build container
+        # The reusable runs inside the caller-provided build_container
+        # (typically a minimal ubuntu:24.04 for DIB workloads). Some
+        # downstream actions / steps assume basic tools that aren't
+        # included in minimal images:
+        #   - sigstore/cosign-installer needs `envsubst` (gettext-base)
+        #     to expand $HOME in the install-dir input
+        #   - `git` is needed by actions/checkout in container mode
+        #     when the runner doesn't add-safe-directory automatically
+        #   - `curl`, `ca-certificates` for general fetches
+        # Skip on non-apt containers (e.g. if a future caller swaps to
+        # a Fedora-based DIB builder).
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y --no-install-recommends \
+              gettext-base ca-certificates curl git sudo
+          fi
+
       - name: Checkout caller repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
