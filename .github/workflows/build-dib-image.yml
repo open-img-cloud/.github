@@ -170,7 +170,7 @@ jobs:
           if command -v apt-get >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y --no-install-recommends \
-              gettext-base ca-certificates curl git sudo
+              gettext-base ca-certificates curl git sudo unzip
           fi
 
       - name: Checkout caller repo
