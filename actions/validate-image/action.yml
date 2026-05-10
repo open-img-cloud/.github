@@ -1,0 +1,152 @@
+name: 'Validate openimages.cloud catalog image'
+description: |
+  Post-publish validator. Fetches the just-published artifact from the
+  CDN and verifies it satisfies the openimages.cloud catalog standards
+  (see docs/IMAGE_STANDARDS.md). Returns non-zero on any failed check
+  so the release run goes red and the issue is visible.
+
+  Runs on: ubuntu-latest (or any GH-hosted glibc runner). Doesn't need
+  the artifact local — pulls from the CDN.
+
+inputs:
+  os_name:
+    description: 'Repo slug used as bucket prefix and CDN path segment.'
+    required: true
+  version:
+    description: 'Version string (matches the published path).'
+    required: true
+  filename:
+    description: 'Artifact filename (e.g. alpine-3.23.4-bios-x86_64.qcow2).'
+    required: true
+  cdn_hostname:
+    description: 'Public CDN hostname.'
+    required: false
+    default: 'images.openimages.cloud'
+  cert_identity_regexp:
+    description: 'Cosign cert-identity regex for verify-blob.'
+    required: false
+    default: '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@'
+  cert_oidc_issuer:
+    description: 'Cosign OIDC issuer for verify-blob.'
+    required: false
+    default: 'https://token.actions.githubusercontent.com'
+  max_size_bytes:
+    description: 'Hard cap on the qcow2 size in bytes. 0 = no cap. Default 2 GB.'
+    required: false
+    default: '2147483648'  # 2 GB
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+    - name: Validate
+      shell: bash
+      env:
+        OS_NAME:    ${{ inputs.os_name }}
+        VERSION:    ${{ inputs.version }}
+        FILENAME:   ${{ inputs.filename }}
+        CDN:        ${{ inputs.cdn_hostname }}
+        CERT_RE:    ${{ inputs.cert_identity_regexp }}
+        OIDC_ISS:   ${{ inputs.cert_oidc_issuer }}
+        MAX_SIZE:   ${{ inputs.max_size_bytes }}
+      run: |
+        set -euo pipefail
+        BASE="https://${CDN}/${OS_NAME}/${VERSION}"
+        LATEST="https://${CDN}/${OS_NAME}/latest"
+        FAIL=0
+        SUMMARY="$GITHUB_STEP_SUMMARY"
+
+        ok()   { echo "::notice::✅ $1"; printf -- "- ✅ %s\n" "$1" >> "$SUMMARY"; }
+        bad()  { echo "::error::❌ $1"; printf -- "- ❌ **%s**\n" "$1" >> "$SUMMARY"; FAIL=1; }
+        info() { echo "ℹ️  $1"; }
+
+        echo "## Catalog validation: \`${OS_NAME}/${VERSION}/${FILENAME}\`" >> "$SUMMARY"
+        echo "" >> "$SUMMARY"
+
+        # ---- A. MANIFEST.json fetchable + required keys ----
+        info "Fetching MANIFEST.json"
+        if ! curl -fsSLO --output-dir /tmp "$BASE/MANIFEST.json"; then
+          bad "MANIFEST.json missing at $BASE/MANIFEST.json"
+        else
+          MANIFEST=/tmp/MANIFEST.json
+          for k in name version filename sha256 built_at commit build_url builder_tool builder signed bundle; do
+            if jq -e --arg k "$k" 'has($k)' "$MANIFEST" >/dev/null; then
+              ok "MANIFEST has key '$k'"
+            else
+              bad "MANIFEST missing required key '$k'"
+            fi
+          done
+          # Cross-check inputs
+          mver=$(jq -r .version "$MANIFEST")
+          if [[ "$mver" == "$VERSION" ]]; then ok "MANIFEST.version == \"$VERSION\""
+          else bad "MANIFEST.version is \"$mver\", expected \"$VERSION\""; fi
+          mname=$(jq -r .name "$MANIFEST")
+          if [[ "$mname" == "$OS_NAME" ]]; then ok "MANIFEST.name == \"$OS_NAME\""
+          else bad "MANIFEST.name is \"$mname\", expected \"$OS_NAME\""; fi
+          msigned=$(jq -r .signed "$MANIFEST")
+          if [[ "$msigned" == "true" ]]; then ok "MANIFEST.signed == true"
+          else bad "MANIFEST.signed is \"$msigned\", expected true"; fi
+        fi
+
+        # ---- E. Sidecars per artifact ----
+        for ext in md5 sha1 sha256 bundle; do
+          if curl -sIfL "$BASE/${FILENAME}.${ext}" -o /dev/null; then
+            ok "Sidecar .${ext} present"
+          else
+            bad "Sidecar .${ext} missing at $BASE/${FILENAME}.${ext}"
+          fi
+        done
+
+        # ---- B. CDN cache headers ----
+        info "Checking versioned cache-control"
+        cc_versioned=$(curl -sIfL "$BASE/${FILENAME}" | awk -F': ' 'tolower($1)=="cache-control"{sub(/\r$/,"",$2); print $2; exit}' || echo '')
+        if [[ "$cc_versioned" == *"immutable"* && "$cc_versioned" == *"max-age=31536000"* ]]; then
+          ok "Versioned URL has immutable + max-age=31536000"
+        else
+          bad "Versioned cache-control should be 'public, max-age=31536000, immutable' (got: '$cc_versioned')"
+        fi
+        info "Checking latest/ cache-control"
+        cc_latest=$(curl -sIfL "$LATEST/${FILENAME}" | awk -F': ' 'tolower($1)=="cache-control"{sub(/\r$/,"",$2); print $2; exit}' || echo '')
+        if [[ "$cc_latest" == *"max-age=300"* ]]; then
+          ok "latest/ URL has max-age=300"
+        else
+          bad "latest/ cache-control should include 'max-age=300' (got: '$cc_latest')"
+        fi
+
+        # ---- H. Image size threshold ----
+        size=$(curl -sIfL "$BASE/${FILENAME}" | awk -F': ' 'tolower($1)=="content-length"{sub(/\r$/,"",$2); print $2; exit}' || echo 0)
+        info "Artifact size: $size bytes"
+        if [[ "$MAX_SIZE" != "0" && "$size" -gt "$MAX_SIZE" ]]; then
+          bad "Size $size > max_size_bytes=$MAX_SIZE — IMAGE_STANDARDS section H breach. Document at the top of the README and bump max_size_bytes per-repo if intentional."
+        else
+          ok "Size $(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size B") within limit"
+        fi
+
+        # ---- A. cosign verify-blob ----
+        info "Cosign verify-blob (downloads ~$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size B") qcow2)"
+        tmpd=$(mktemp -d)
+        if curl -fsSLO --output-dir "$tmpd" "$BASE/${FILENAME}.bundle" \
+           && curl -fsSLO --output-dir "$tmpd" "$BASE/${FILENAME}"; then
+          if cosign verify-blob \
+              --bundle "$tmpd/${FILENAME}.bundle" \
+              --new-bundle-format \
+              --certificate-identity-regexp "$CERT_RE" \
+              --certificate-oidc-issuer "$OIDC_ISS" \
+              "$tmpd/${FILENAME}" >/dev/null 2>&1; then
+            ok "cosign verify-blob: Verified OK"
+          else
+            bad "cosign verify-blob FAILED — bundle / cert / blob mismatch"
+          fi
+        else
+          bad "Couldn't download artifact + bundle for cosign verify"
+        fi
+        rm -rf "$tmpd"
+
+        echo "" >> "$SUMMARY"
+        if [[ "$FAIL" -ne 0 ]]; then
+          echo "**Result:** ❌ one or more catalog standard checks failed" >> "$SUMMARY"
+          exit 1
+        fi
+        echo "**Result:** ✅ all catalog standard checks passed" >> "$SUMMARY"

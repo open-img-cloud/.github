@@ -3,6 +3,12 @@
 This document defines the contract every image repository in `open-img-cloud`
 must follow to consume the shared build infrastructure hosted in this repo.
 
+> **For published-image standards** (provenance, signing, distribution,
+> CDN, sidecars, lifecycle, validation), see
+> [`docs/IMAGE_STANDARDS.md`](docs/IMAGE_STANDARDS.md). The catalog
+> auto-validation action [`actions/validate-image/`](actions/validate-image/)
+> enforces those standards on every signed publish.
+
 ## Build runtime
 
 All image builds run on **self-hosted Rocky 10 runners with nested virtualization**

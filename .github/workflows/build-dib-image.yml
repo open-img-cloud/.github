@@ -412,6 +412,15 @@ jobs:
           api_token: ${{ secrets.CF_API_TOKEN }}
           paths: ${{ steps.purge-paths.outputs.paths }}
 
+      - name: Validate against IMAGE_STANDARDS.md
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/validate-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          filename: ${{ steps.vars.outputs.output_filename }}
+          cdn_hostname: ${{ inputs.cf_public_hostname }}
+
       - name: Upload artifacts (CI debugging)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
