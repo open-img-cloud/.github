@@ -482,8 +482,8 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
 - **Network egress filtering**: if the host is behind a firewall, allow
   outbound to: `api.github.com`, `*.actions.githubusercontent.com`,
   `objects.githubusercontent.com`, `ghcr.io`, `quay.io`,
-  `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus your Garage and R2
-  endpoints.
+  `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus the Infomaniak Object
+  Storage endpoint (`s3.gva2.infomaniak.cloud`).
 
 ## 10. Common failures
 

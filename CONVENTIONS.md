@@ -40,8 +40,8 @@ Inherited by reusable workflows via `secrets: inherit`. Configure once at the
 org level (Settings → Secrets and variables → Actions → New organization secret)
 and grant access to the runner-group repos (or "Selected repositories"):
 
-- `S3_GARAGE_ENDPOINT`, `S3_GARAGE_KEY_ID`, `S3_GARAGE_SECRET`
-- `R2_ENDPOINT`, `R2_KEY_ID`, `R2_SECRET`
+- `OIC_S3_KEY_ID`, `OIC_S3_SECRET` — S3 credentials of the Infomaniak
+  Public Cloud project `Images_Storage` (Object Storage)
 - `CF_ZONE_ID`, `CF_API_TOKEN`
 
 These secrets are declared `required: false` in the reusable workflow
@@ -72,7 +72,7 @@ override is committed.
 3. Merging the PR is a manual step.
 4. After merge, push a git tag matching the version (e.g., `v3.22.0`).
 5. The release workflow triggers on tag push, builds the image, signs it,
-   uploads to Garage + R2, and purges Cloudflare cache for `latest/`.
+   uploads to Infomaniak Object Storage, and purges Cloudflare cache for `latest/`.
 
 Public download URL pattern:
 
@@ -83,13 +83,15 @@ https://images.openimages.cloud/<os_name>/latest/<filename>
 
 ## Storage layout: one bucket per distribution
 
-Each image repo gets its **own bucket** on each backend, named exactly
-after the repo / OS slug (`os_name`). The bucket must exist on both
-Garage (source of truth) and R2 (CDN mirror) before a release fires —
-the publish action does not create them.
+Each image repo gets its **own public bucket** on Infomaniak Object
+Storage (Ceph S3, Public Cloud project `Images_Storage`, region `dc4-a`),
+named exactly after the repo / OS slug (`os_name`). It is the single
+source of truth: versioning is enabled (non-current versions kept 30
+days). The bucket must exist before a release fires — the publish action
+does not create it.
 
 ```
-Garage / R2 buckets   <os_name>          (e.g. alpaquita-linux, alpine-linux)
+Bucket                <os_name>          (e.g. alpaquita-linux, alpine-linux)
 Path inside bucket     <version>/<filename>      ← immutable, max-age=31536000
                        latest/<filename>          ← mutable alias, max-age=300
 ```
@@ -98,16 +100,15 @@ The public URL **stays unchanged**:
 ```
 https://images.openimages.cloud/<os_name>/<version>/<filename>
 ```
-A Cloudflare worker / origin rule maps the URL path's first segment
-to the corresponding R2 bucket (i.e. `/<os_name>/<rest>` → bucket
-`<os_name>`, key `<rest>`). Adding a new image repo is a 3-step
+The [`images-router`](https://github.com/open-img-cloud/images-router)
+Cloudflare Worker maps the URL path's first segment to the bucket and
+proxies to its anonymous path-style URL
+(`https://s3.gva2.infomaniak.cloud/<tenant>:<os_name>/<rest>`), with the
+Cloudflare edge cache in front. Adding a new image repo is a 2-step
 operation:
-1. Create bucket `<os_name>` on Garage (`garage bucket create <os_name>`).
-2. Create R2 bucket `<os_name>` and grant the org-level R2 API token
-   write access to it.
-3. Add a Cloudflare worker / rules entry mapping `/<os_name>/...` to
-   the new R2 bucket (or use a wildcard rule that auto-routes any
-   first-path-segment).
+1. Create the public bucket `<os_name>` in `Images_Storage` (Infomaniak
+   Manager or API, region `dc4-a`).
+2. Add `<os_name>` to `ALLOWED_BUCKETS` in `images-router/wrangler.toml`.
 
 The `bucket_name` input on the reusable workflows defaults to empty,
 which makes the `publish-image` composite action fall back to `os_name`.

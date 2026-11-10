@@ -95,12 +95,8 @@ on:
     # are optional; runtime validation in the build job fails fast when
     # publish=true and any are missing.
     secrets:
-      S3_GARAGE_ENDPOINT: { required: false }
-      S3_GARAGE_KEY_ID:   { required: false }
-      S3_GARAGE_SECRET:   { required: false }
-      R2_ENDPOINT:        { required: false }
-      R2_KEY_ID:          { required: false }
-      R2_SECRET:          { required: false }
+      OIC_S3_KEY_ID:      { required: false }
+      OIC_S3_SECRET:      { required: false }
       CF_ZONE_ID:         { required: false }
       CF_API_TOKEN:       { required: false }
       OS_AUTH_URL:                       { required: false }
@@ -223,19 +219,14 @@ jobs:
         if: ${{ inputs.publish }}
         shell: bash
         env:
-          S3_GARAGE_ENDPOINT: ${{ secrets.S3_GARAGE_ENDPOINT }}
-          S3_GARAGE_KEY_ID: ${{ secrets.S3_GARAGE_KEY_ID }}
-          S3_GARAGE_SECRET: ${{ secrets.S3_GARAGE_SECRET }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_KEY_ID: ${{ secrets.R2_KEY_ID }}
-          R2_SECRET: ${{ secrets.R2_SECRET }}
+          OIC_S3_KEY_ID: ${{ secrets.OIC_S3_KEY_ID }}
+          OIC_S3_SECRET: ${{ secrets.OIC_S3_SECRET }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
           set -eo pipefail
           missing=()
-          for var in S3_GARAGE_ENDPOINT S3_GARAGE_KEY_ID S3_GARAGE_SECRET \
-                     R2_ENDPOINT R2_KEY_ID R2_SECRET \
+          for var in OIC_S3_KEY_ID OIC_S3_SECRET \
                      CF_ZONE_ID CF_API_TOKEN; do
             if [[ -z "${!var:-}" ]]; then
               missing+=("$var")
@@ -368,7 +359,7 @@ jobs:
               bundle: (if $signed then ($filename + ".bundle") else null end)
             }' > "$manifest_filename"
 
-      - name: Publish to Garage and R2
+      - name: Publish to Infomaniak Object Storage
         if: ${{ inputs.publish }}
         uses: ./.oic-shared/actions/publish-image
         with:
@@ -377,12 +368,8 @@ jobs:
           artifacts_dir: build/output
           bucket_name: ${{ inputs.bucket_name }}
           also_latest: ${{ inputs.sync_latest }}
-          garage_endpoint: ${{ secrets.S3_GARAGE_ENDPOINT }}
-          garage_key_id: ${{ secrets.S3_GARAGE_KEY_ID }}
-          garage_secret: ${{ secrets.S3_GARAGE_SECRET }}
-          r2_endpoint: ${{ secrets.R2_ENDPOINT }}
-          r2_key_id: ${{ secrets.R2_KEY_ID }}
-          r2_secret: ${{ secrets.R2_SECRET }}
+          s3_key_id: ${{ secrets.OIC_S3_KEY_ID }}
+          s3_secret: ${{ secrets.OIC_S3_SECRET }}
 
       - name: Compute Cloudflare purge URL list
         id: purge-paths

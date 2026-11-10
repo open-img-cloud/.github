@@ -3,7 +3,7 @@
 **Open Image Cloud** publishes ready-to-use, **cosign-signed**, **reproducible** cloud images for **OpenStack** and **Proxmox**.
 
 - 🌐 **Website** — <https://openimages.cloud>
-- 📦 **Image registry** — <https://images.openimages.cloud> (CDN-backed mirror of our self-hosted Garage source-of-truth)
+- 📦 **Image registry** — <https://images.openimages.cloud> (Cloudflare CDN in front of Swiss-hosted Infomaniak Object Storage)
 - 📜 **Conventions & contribution guide** — [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md)
 
 ---
@@ -82,7 +82,7 @@ cosign verify-blob alpine-3.23.4-uefi-x86_64.qcow2 \
 
 The build pipeline lives in [`open-img-cloud/.github`](https://github.com/open-img-cloud/.github) as a set of **reusable GitHub workflows** plus **composite actions**. Each image repo stays thin: `VERSION`, a `customize.sh` (libguestfs) or `dib-build.sh` (diskimage-builder) hook, a `detect-upstream.sh` watcher, plus two thin caller workflows. See [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md) for the full contract.
 
-Storage topology: [Garage](https://garagehq.deuxfleurs.fr) (self-hosted S3, source-of-truth) → mirrored to [Cloudflare R2](https://www.cloudflare.com/developer-platform/products/r2/) → served behind the Cloudflare CDN at <https://images.openimages.cloud>. Routing is handled by [`images-router`](https://github.com/open-img-cloud/images-router), a tiny Cloudflare Worker that maps `/<os>/*` to per-distribution buckets.
+Storage topology: [Infomaniak Object Storage](https://www.infomaniak.com/en/hosting/public-cloud/object-storage) (S3, hosted in Switzerland, single source of truth) → served behind the Cloudflare CDN at <https://images.openimages.cloud>. Routing is handled by [`images-router`](https://github.com/open-img-cloud/images-router), a tiny Cloudflare Worker that maps `/<os>/*` to per-distribution buckets.
 
 ---
 

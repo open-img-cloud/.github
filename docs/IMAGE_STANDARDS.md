@@ -16,7 +16,7 @@ date and rationale.
 
 - **Cosign keyless** signature using sigstore-bundle format
   (`--new-bundle-format`). Bundle filename: `<artifact>.bundle`,
-  alongside the artifact in the same R2/Garage path.
+  alongside the artifact in the same bucket path.
 - **Certificate identity regex** points to the reusable workflow that
   produced the signature, not the caller repo. Currently:
   `^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@`.
@@ -50,15 +50,12 @@ date and rationale.
 
 ## B — Distribution (MUST)
 
-- **Per-distro Garage bucket** (source of truth) named `<repo slug>`,
-  e.g. `alpine-linux`. Hosted on the openimages.cloud Garage cluster.
-- **Per-distro R2 bucket** (Cloudflare-fronted CDN) with the same name
-  as the Garage bucket. Garage→R2 sync runs in the publish step of
-  the reusable workflow.
-- **Worker `images-router` binding** active. The bucket name MUST be
-  in `ALLOWED_BUCKETS` AND a matching `[[r2_buckets]]` block MUST
-  exist in `wrangler.toml`. Binding name = `uppercase(<slug>) with -
-  → _` (e.g. `alpine-linux` → `ALPINE_LINUX`).
+- **Per-distro public bucket** on Infomaniak Object Storage (Ceph S3,
+  Public Cloud project `Images_Storage`, region `dc4-a`) named
+  `<repo slug>`, e.g. `alpine-linux`. Single source of truth, with
+  versioning enabled (non-current versions kept 30 days).
+- **Worker `images-router` route** active: the bucket name MUST be in
+  `ALLOWED_BUCKETS` in `wrangler.toml`.
 - **URL pattern**:
   - Versioned: `https://images.openimages.cloud/<slug>/<version>/<filename>`
     — `Cache-Control: public, max-age=31536000, immutable`.
