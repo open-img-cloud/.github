@@ -40,7 +40,7 @@ on:
         default: 'build/nix-build.sh'
       runner_labels:
         type: string
-        default: '["self-hosted","Linux","kvm"]'
+        default: '["ubuntu-latest"]'
       build_container:
         description: 'OCI image with Nix preinstalled. Default: nixos/nix (Alpine-based, multi-user mode disabled).'
         type: string

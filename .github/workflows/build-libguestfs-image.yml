@@ -2,8 +2,8 @@ name: Reusable build libguestfs image
 
 # Reusable workflow consumed by repos that build their image via libguestfs
 # (virt-customize / virt-sysprep / virt-sparsify). The build runs inside a
-# stackopshq/libguestfs-tools container, on a self-hosted runner with
-# /dev/kvm exposed (nested virtualization required by the libguestfs
+# stackopshq/libguestfs-tools container, on a runner with /dev/kvm exposed
+# (GitHub-hosted ubuntu-latest by default; KVM is required by the libguestfs
 # appliance for acceptable performance).
 #
 # Before the build, a dedicated verify-builder job checks that the
@@ -62,9 +62,9 @@ on:
         type: number
         default: 420
       runner_labels:
-        description: 'JSON array of self-hosted runner labels (default: KVM-capable Linux runners).'
+        description: 'JSON array of runner labels (default: GitHub-hosted ubuntu-latest, which exposes /dev/kvm).'
         type: string
-        default: '["self-hosted","Linux","kvm"]'
+        default: '["ubuntu-latest"]'
       build_container:
         description: 'OCI image providing libguestfs tools, qemu-img, jq, curl. Must be signed via cosign keyless.'
         type: string

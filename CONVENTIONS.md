@@ -11,16 +11,18 @@ must follow to consume the shared build infrastructure hosted in this repo.
 
 ## Build runtime
 
-All image builds run on **self-hosted Rocky 10 runners with nested virtualization**
-(`/dev/kvm` exposed to the runner user). The reusable workflows expect runner
-labels matching `["self-hosted","Linux","kvm"]` by default; consumers can
-override via the `runner_labels` input.
+All image builds run on **GitHub-hosted `ubuntu-latest` runners** by default.
+These runners expose `/dev/kvm` (verified 2026-11-10: `libguestfs-test-tool`
+reports `qemu KVM: enabled` inside the builder container started with
+`--device=/dev/kvm`), so libguestfs and the qemu smoke test run accelerated.
+Consumers can still target self-hosted KVM runners via the `runner_labels`
+input (e.g. `'["self-hosted","Linux","kvm"]'`); see
+[`docs/runners.md`](docs/runners.md) for provisioning those.
 
 Builds execute inside the **stackopshq builder image**
 (`ghcr.io/stackopshq/libguestfs-tools:2`), pinned to a major version. Before
 the build job starts, a `verify-builder` job runs `cosign verify` against the
-image's keyless signature; the build is aborted if verification fails. See
-[`docs/runners.md`](docs/runners.md) for runner provisioning details.
+image's keyless signature; the build is aborted if verification fails.
 
 ## Required files in the caller repo
 
