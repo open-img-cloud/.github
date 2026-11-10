@@ -101,7 +101,7 @@ runs:
           if command -v apt-get >/dev/null; then
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              python3 openssh-client curl ca-certificates >/dev/null
+              python3 python3-venv openssh-client curl ca-certificates >/dev/null
           elif command -v dnf >/dev/null; then
             dnf install -y -q python3 openssh-clients curl ca-certificates
           elif command -v apk >/dev/null; then
@@ -111,8 +111,18 @@ runs:
             exit 1
           fi
         fi
-        # The libguestfs builder image (ghcr.io/stackopshq/libguestfs-tools)
-        # ships python3 but not pip/pipx. Bootstrap pip via get-pip.py so
+        # Preferred: a private virtualenv. Distro Pythons that are
+        # "externally managed" (PEP 668, e.g. Ubuntu 24.04) refuse a
+        # system-wide pip install.
+        venv="${RUNNER_TEMP:-/tmp}/osc-venv"
+        if python3 -m venv "$venv" 2>/dev/null; then
+          "$venv/bin/pip" install --quiet --disable-pip-version-check python-openstackclient
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          "$venv/bin/openstack" --version
+          exit 0
+        fi
+        # Fallback: the libguestfs builder image (ghcr.io/stackopshq/libguestfs-tools)
+        # ships python3 but not pip/pipx nor the venv module. Bootstrap pip via get-pip.py so
         # the action works in any minimal container without pulling extra
         # packages into the build image.
         if ! python3 -c "import pip" 2>/dev/null; then
