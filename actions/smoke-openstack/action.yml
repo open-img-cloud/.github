@@ -268,19 +268,35 @@ runs:
         fi
         ok "Instance ACTIVE"
 
-        # ---- 5. Floating IP ----
-        FIP=$(openstack floating ip create "$EXTNET" -f value -c floating_ip_address)
-        openstack server add floating ip "$SRV_NAME" "$FIP"
-        info "Floating IP: $FIP"
+        # ---- 5. Public address ----
+        # Projects without a private network land the instance directly on
+        # a public provider network (Infomaniak's ext-net1): it already has
+        # a global IPv4 and a floating IP cannot be associated (no router).
+        # Use that address when present, otherwise allocate a floating IP.
+        IP=$(openstack server show "$SRV_NAME" -f json -c addresses | python3 -c '
+        import ipaddress, re, sys
+        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", sys.stdin.read())
+        print(next((i for i in ips if ipaddress.ip_address(i).is_global), ""))
+        ')
+        if [[ -n "$IP" ]]; then
+          info "Public IP on $TENANT_NET: $IP (no floating IP needed)"
+        else
+          FIP=$(openstack floating ip create --description "$TAG" "$EXTNET" -f value -c floating_ip_address)
+          # Export right away so cleanup releases it even if a later step fails.
+          echo "fip=$FIP" >> "$GITHUB_OUTPUT"
+          openstack server add floating ip "$SRV_NAME" "$FIP"
+          IP="$FIP"
+          info "Floating IP: $FIP"
+        fi
 
         # ---- 6. Probe SSH (TCP-open + handshake) ----
         end=$((SECONDS + SSH_TIMEOUT))
         while (( SECONDS < end )); do
-          if timeout 5 bash -c "</dev/tcp/$FIP/22" 2>/dev/null; then
+          if timeout 5 bash -c "</dev/tcp/$IP/22" 2>/dev/null; then
             if ssh -i "$WORK/id" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                    -o ConnectTimeout=5 -o BatchMode=yes \
-                   "${LOGIN_USER}@${FIP}" true 2>/dev/null; then
-              ok "SSH reachable as $LOGIN_USER@$FIP"
+                   "${LOGIN_USER}@${IP}" true 2>/dev/null; then
+              ok "SSH reachable as $LOGIN_USER@$IP"
               break
             fi
           fi
@@ -292,7 +308,7 @@ runs:
           exit 1
         fi
 
-        SSH="ssh -i $WORK/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${LOGIN_USER}@${FIP}"
+        SSH="ssh -i $WORK/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${LOGIN_USER}@${IP}"
 
         # ---- 7. Identity + cloud-init status ----
         UNAME=$($SSH 'uname -a' || echo '')
@@ -357,6 +373,11 @@ runs:
         if [[ -n "$FIP" ]]; then
           openstack floating ip delete "$FIP" 2>/dev/null
         fi
+        # Also release any floating IP tagged for this run (covers paths
+        # where the address was never exported).
+        for id in $(openstack floating ip list -f value -c ID -c Description 2>/dev/null | awk -v t="$TAG" '$2==t{print $1}'); do
+          openstack floating ip delete "$id" 2>/dev/null
+        done
         openstack keypair delete "$TAG" 2>/dev/null
         openstack security group delete "$TAG" 2>/dev/null
         # Iterate by ID so duplicate-name leftovers from earlier failed
