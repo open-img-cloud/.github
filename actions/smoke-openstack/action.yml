@@ -140,7 +140,12 @@ runs:
         # whole org so re-dispatches at the same commit never collide
         # (which used to happen with SHORT_SHA + RUN_ATTEMPT and produce
         # "More than one Image exists" at boot time).
-        TAG="oic-smoke-${OS_NAME}-${VERSION}-${GITHUB_RUN_ID:-local}"
+        # Multi-variant callers (alpine bios/uefi, alpaquita glibc/musl) run
+        # one smoke per matrix job inside the SAME run: add a short hash of
+        # the filename, plus the run attempt, so parallel jobs and re-runs
+        # never share keypair / security group / server / image names.
+        FILE_HASH="$(printf '%s' "$FILENAME" | sha256sum | cut -c1-8)"
+        TAG="oic-smoke-${OS_NAME}-${VERSION}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${FILE_HASH}"
         # Sanitize: Nova rejects '.' (and friends) in keypair names. The
         # universal-safe charset across image/server/keypair/security
         # group on most clouds is [a-zA-Z0-9_-]. Replace anything else
