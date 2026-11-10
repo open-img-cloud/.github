@@ -343,10 +343,20 @@ runs:
         fi
 
         # ---- 8. Network egress ----
-        if $SSH 'getent hosts deb.debian.org >/dev/null 2>&1 || nslookup deb.debian.org >/dev/null 2>&1'; then
+        # Retry: right after cloud-init the guest resolver can still be
+        # settling (observed as a one-off failure on an otherwise good image).
+        dns_ok=0
+        for _ in 1 2 3 4 5 6; do
+          if $SSH 'getent hosts deb.debian.org >/dev/null 2>&1 || nslookup deb.debian.org >/dev/null 2>&1'; then
+            dns_ok=1; break
+          fi
+          sleep 5
+        done
+        if [[ "$dns_ok" -eq 1 ]]; then
           ok "DNS resolution works inside guest"
         else
           bad "DNS resolution failed inside guest"
+          $SSH 'cat /etc/resolv.conf' || true
         fi
 
         echo "" >> "$SUMMARY"
