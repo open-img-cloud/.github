@@ -1,10 +1,11 @@
-name: 'Publish image to Garage and R2'
-description: 'Dual-uploads a directory of artifacts to Garage (source of truth) and R2 (public mirror), generates an HTML index, and optionally syncs the version to the latest/ alias.'
+name: 'Publish image to Infomaniak Object Storage'
+description: 'Uploads a directory of artifacts to Infomaniak Object Storage (Ceph S3, single source of truth), generates an HTML index, and optionally syncs the version to the latest/ alias.'
 
-# Bucket model: one bucket per distribution, named after `os_name`. Each bucket
-# must exist on both backends (Garage + R2) before this action runs — the
-# action does not create buckets. Path inside the bucket: `<version>/<filename>`,
-# plus an optional `latest/` mirror.
+# Bucket model: one public bucket per distribution, named after `os_name`, in
+# the Infomaniak Public Cloud project `Images_Storage`. The bucket must exist
+# before this action runs — the action does not create buckets. Path inside
+# the bucket: `<version>/<filename>`, plus an optional `latest/` mirror.
+# Public reads go through the images-router Worker (images.openimages.cloud).
 
 inputs:
   os_name:
@@ -17,7 +18,7 @@ inputs:
     description: 'Local directory whose contents will be uploaded.'
     required: true
   bucket_name:
-    description: 'Bucket name override. Empty (default) → falls back to os_name. Buckets must exist on both Garage and R2 with the same name.'
+    description: 'Bucket name override. Empty (default) → falls back to os_name.'
     required: false
     default: ''
   also_latest:
@@ -25,21 +26,17 @@ inputs:
     required: false
     default: 'true'
 
-  garage_endpoint:
-    required: true
-  garage_key_id:
-    required: true
-  garage_secret:
-    required: true
-  garage_region:
+  s3_endpoint:
+    description: 'S3 endpoint of Infomaniak Object Storage.'
     required: false
-    default: 'garage'
-
-  r2_endpoint:
+    default: 'https://s3.gva2.infomaniak.cloud'
+  s3_region:
+    description: 'SigV4 signing region.'
+    required: false
+    default: 'gva2'
+  s3_key_id:
     required: true
-  r2_key_id:
-    required: true
-  r2_secret:
+  s3_secret:
     required: true
 
 runs:
@@ -89,6 +86,26 @@ runs:
         rm -rf "$tmp"
         aws --version
 
+    - name: Configure aws-cli for Ceph S3
+      shell: bash
+      env:
+        S3_REGION: ${{ inputs.s3_region }}
+      run: |
+        set -euo pipefail
+        # Ceph RGW: path-style addressing, and only send/validate checksums
+        # when the API requires them (aws-cli >= 2.23 defaults to CRC
+        # checksums on every request, which some RGW versions reject).
+        cfg="$RUNNER_TEMP/oic-aws-config"
+        cat > "$cfg" <<CFG
+        [default]
+        region = ${S3_REGION}
+        request_checksum_calculation = when_required
+        response_checksum_validation = when_required
+        s3 =
+            addressing_style = path
+        CFG
+        echo "AWS_CONFIG_FILE=$cfg" >> "$GITHUB_ENV"
+
     - name: Generate index.html for the version directory
       shell: bash
       env:
@@ -135,64 +152,36 @@ runs:
         HTML
         } > index.html
 
-    - name: Upload versioned artifacts to Garage and R2
+    - name: Upload versioned artifacts
       shell: bash
       env:
         ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
         DEST_PREFIX: s3://${{ steps.resolve.outputs.bucket }}/${{ inputs.version }}/
-        GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
-        GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
-        GARAGE_SECRET: ${{ inputs.garage_secret }}
-        GARAGE_REGION: ${{ inputs.garage_region }}
-        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
-        R2_KEY_ID: ${{ inputs.r2_key_id }}
-        R2_SECRET: ${{ inputs.r2_secret }}
+        S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.s3_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.s3_secret }}
       run: |
         set -euo pipefail
-        upload() {
-          local label="$1" endpoint="$2" key="$3" secret="$4" region="$5"
-          echo "::group::Upload to ${label}"
-          AWS_ACCESS_KEY_ID="$key" \
-          AWS_SECRET_ACCESS_KEY="$secret" \
-          AWS_REGION="$region" \
-          aws s3 cp \
-            --recursive --no-progress \
-            --cache-control "public, max-age=31536000, immutable" \
-            --endpoint-url "$endpoint" \
-            "$ARTIFACTS_DIR" "$DEST_PREFIX"
-          echo "::endgroup::"
-        }
-        upload Garage "$GARAGE_ENDPOINT" "$GARAGE_KEY_ID" "$GARAGE_SECRET" "$GARAGE_REGION"
-        upload R2     "$R2_ENDPOINT"     "$R2_KEY_ID"     "$R2_SECRET"     auto
+        aws s3 cp \
+          --recursive --no-progress \
+          --cache-control "public, max-age=31536000, immutable" \
+          --endpoint-url "$S3_ENDPOINT" \
+          "$ARTIFACTS_DIR" "$DEST_PREFIX"
 
-    - name: Sync version to latest/ on Garage and R2
+    - name: Sync version to latest/
       if: inputs.also_latest == 'true'
       shell: bash
       env:
         SRC: s3://${{ steps.resolve.outputs.bucket }}/${{ inputs.version }}/
         DST: s3://${{ steps.resolve.outputs.bucket }}/latest/
-        GARAGE_ENDPOINT: ${{ inputs.garage_endpoint }}
-        GARAGE_KEY_ID: ${{ inputs.garage_key_id }}
-        GARAGE_SECRET: ${{ inputs.garage_secret }}
-        GARAGE_REGION: ${{ inputs.garage_region }}
-        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
-        R2_KEY_ID: ${{ inputs.r2_key_id }}
-        R2_SECRET: ${{ inputs.r2_secret }}
+        S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.s3_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.s3_secret }}
       run: |
         set -euo pipefail
-        sync_latest() {
-          local label="$1" endpoint="$2" key="$3" secret="$4" region="$5"
-          echo "::group::Sync latest/ on ${label}"
-          AWS_ACCESS_KEY_ID="$key" \
-          AWS_SECRET_ACCESS_KEY="$secret" \
-          AWS_REGION="$region" \
-          aws s3 sync \
-            --delete --no-progress \
-            --cache-control "public, max-age=300" \
-            --metadata-directive REPLACE \
-            --endpoint-url "$endpoint" \
-            "$SRC" "$DST"
-          echo "::endgroup::"
-        }
-        sync_latest Garage "$GARAGE_ENDPOINT" "$GARAGE_KEY_ID" "$GARAGE_SECRET" "$GARAGE_REGION"
-        sync_latest R2     "$R2_ENDPOINT"     "$R2_KEY_ID"     "$R2_SECRET"     auto
+        aws s3 sync \
+          --delete --no-progress \
+          --cache-control "public, max-age=300" \
+          --metadata-directive REPLACE \
+          --endpoint-url "$S3_ENDPOINT" \
+          "$SRC" "$DST"

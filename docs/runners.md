@@ -1,7 +1,13 @@
 # Self-hosted Rocky 10 runners — provisioning runbook
 
+> **Optional since 2026-11-10.** The reusable workflows now default to
+> GitHub-hosted `ubuntu-latest`, which exposes `/dev/kvm`. This runbook is
+> kept for callers that opt into self-hosted runners via `runner_labels`
+> (e.g. for longer builds or more disk). The "Why self-hosted" note below
+> predates GitHub enabling KVM on its Linux runners.
+
 The reusable workflows in this repo (`build-libguestfs-image.yml`,
-`build-dib-image.yml`) run on **self-hosted Rocky Linux 10 runners with
+`build-dib-image.yml`) can run on **self-hosted Rocky Linux 10 runners with
 nested virtualization enabled** (`/dev/kvm` exposed to the runner user).
 This document describes how to provision such a runner from scratch.
 
@@ -482,8 +488,8 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
 - **Network egress filtering**: if the host is behind a firewall, allow
   outbound to: `api.github.com`, `*.actions.githubusercontent.com`,
   `objects.githubusercontent.com`, `ghcr.io`, `quay.io`,
-  `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus your Garage and R2
-  endpoints.
+  `fulcio.sigstore.dev`, `rekor.sigstore.dev`, plus the Infomaniak Object
+  Storage endpoint (`s3.gva2.infomaniak.cloud`).
 
 ## 10. Common failures
 
