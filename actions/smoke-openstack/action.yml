@@ -75,7 +75,7 @@ runs:
         OS_APPLICATION_CREDENTIAL_SECRET:  ${{ inputs.os_application_credential_secret }}
       run: |
         if [[ -z "${OS_AUTH_URL:-}" || -z "${OS_APPLICATION_CREDENTIAL_ID:-}" || -z "${OS_APPLICATION_CREDENTIAL_SECRET:-}" ]]; then
-          echo "::notice::Runtime smoke skipped — OS_AUTH_URL / OS_APPLICATION_CREDENTIAL_* secrets not configured. Add them at the org level (open-img-cloud) to enable the smoke."
+          echo "::notice::Runtime smoke skipped, OS_AUTH_URL / OS_APPLICATION_CREDENTIAL_* secrets not configured. Add them at the org level (open-img-cloud) to enable the smoke."
           echo "should_run=false" >> "$GITHUB_OUTPUT"
         else
           echo "should_run=true"  >> "$GITHUB_OUTPUT"
@@ -151,7 +151,7 @@ runs:
         # group on most clouds is [a-zA-Z0-9_-]. Replace anything else
         # with '-' so versions like 3.23.4 don't poison the keypair call.
         TAG="$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_-' '-')"
-        # OpenStack object names — image/server/keypair/secgroup share the
+        # OpenStack object names: image/server/keypair/secgroup share the
         # tag so cleanup is single-pass on tag match.
         IMG_NAME="$TAG"
         SRV_NAME="$TAG"
@@ -177,7 +177,7 @@ runs:
 
         # ---- 0. Auth probe ----
         if ! openstack token issue -f value -c id >/dev/null 2>&1; then
-          bad "OpenStack auth failed — check OS_* secrets"
+          bad "OpenStack auth failed: check OS_* secrets"
           exit 1
         fi
         ok "Auth OK against $OS_AUTH_URL ($OS_REGION_NAME)"
@@ -204,7 +204,7 @@ runs:
             --method web-download \
             --uri "$IMG_URL" \
             "$IMG_NAME" 2>/tmp/img-import.err; then
-          info "web-download import accepted — polling for status=active"
+          info "web-download import accepted: polling for status=active"
           # Async path: image starts as 'queued', flips to 'importing',
           # then 'active' once the cloud finishes pulling. Use a fresh
           # deadline based on wall clock, NOT $SECONDS, so we get the
@@ -224,9 +224,9 @@ runs:
           # returns successfully the image is already 'active', so no
           # poll loop is needed. The upload itself can take minutes on
           # slow uplinks; that's expected.
-          info "web-download unavailable on this cloud — falling back to fetch + re-upload"
+          info "web-download unavailable on this cloud: falling back to fetch + re-upload"
           cat /tmp/img-import.err >&2 || true
-          # Remove any pre-existing image record(s) with the same name —
+          # Remove any pre-existing image record(s) with the same name:
           # plain \`image delete <name>\` fails on multi-match, so iterate
           # over IDs to be safe.
           for id in $(openstack image list -f value -c ID --name "$IMG_NAME" 2>/dev/null); do
@@ -254,7 +254,7 @@ runs:
         # ---- 3. Pick a tenant network (first non-external) ----
         TENANT_NET=$(openstack network list --internal -f value -c Name | head -1)
         if [[ -z "$TENANT_NET" ]]; then
-          bad "No internal network found — create one in the smoke project"
+          bad "No internal network found: create one in the smoke project"
           exit 1
         fi
         info "Tenant network: $TENANT_NET"
@@ -326,12 +326,12 @@ runs:
         # cloud-init status: portable across distros; ignore on systems
         # without cloud-init in $PATH (we still passed cloud-init since
         # SSH key was injected, but `cloud-init status` may not be in the
-        # default user PATH on minimal images — fall back to a log peek).
+        # default user PATH on minimal images: fall back to a log peek).
         ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
         if echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
         elif echo "$ci" | grep -q "status: error"; then
-          bad "cloud-init in error state — see console log"
+          bad "cloud-init in error state: see console log"
           openstack console log show "$SRV_NAME" | tail -80 || true
         else
           # Last resort: check that cloud-init at least wrote a final-message
@@ -410,5 +410,5 @@ runs:
       if: steps.smoke.outputs.fail == '1'
       shell: bash
       run: |
-        echo "::error::runtime smoke failed — see step summary"
+        echo "::error::runtime smoke failed, see step summary"
         exit 1

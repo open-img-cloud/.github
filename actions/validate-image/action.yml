@@ -6,7 +6,7 @@ description: |
   so the release run goes red and the issue is visible.
 
   Runs on: ubuntu-latest (or any GH-hosted glibc runner). Doesn't need
-  the artifact local — pulls from the CDN.
+  the artifact local: pulls from the CDN.
 
 inputs:
   os_name:
@@ -132,7 +132,7 @@ runs:
         size=$(curl -sIfL "$BASE/${FILENAME}" | awk -F': ' 'tolower($1)=="content-length"{sub(/\r$/,"",$2); print $2; exit}' || echo 0)
         info "Artifact size: $size bytes"
         if [[ "$MAX_SIZE" != "0" && "$size" -gt "$MAX_SIZE" ]]; then
-          bad "Size $size > max_size_bytes=$MAX_SIZE — IMAGE_STANDARDS section H breach. Document at the top of the README and bump max_size_bytes per-repo if intentional."
+          bad "Size $size > max_size_bytes=$MAX_SIZE: IMAGE_STANDARDS section H breach. Document at the top of the README and bump max_size_bytes per-repo if intentional."
         else
           ok "Size $(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size B") within limit"
         fi
@@ -150,7 +150,7 @@ runs:
               "$tmpd/${FILENAME}" >/dev/null 2>&1; then
             ok "cosign verify-blob: Verified OK"
           else
-            bad "cosign verify-blob FAILED — bundle / cert / blob mismatch"
+            bad "cosign verify-blob FAILED: bundle / cert / blob mismatch"
           fi
         else
           bad "Couldn't download artifact + bundle for cosign verify"

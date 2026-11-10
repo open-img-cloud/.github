@@ -1,4 +1,4 @@
-# Self-hosted Rocky 10 runners — provisioning runbook
+# Self-hosted Rocky 10 runners: provisioning runbook
 
 > **Optional since 2026-11-10.** The reusable workflows now default to
 > GitHub-hosted `ubuntu-latest`, which exposes `/dev/kvm`. This runbook is
@@ -14,7 +14,7 @@ This document describes how to provision such a runner from scratch.
 > **Why self-hosted, not GitHub-hosted?**
 > Image builds invoke `libguestfs` / `qemu-kvm`, which spawn an appliance VM
 > at runtime. Without `/dev/kvm`, the appliance falls back to TCG software
-> emulation — 10–50× slower, and unreliable for builds taking >5 minutes.
+> emulation: 10–50× slower, and unreliable for builds taking >5 minutes.
 > GitHub-hosted runners do not expose `/dev/kvm`. The builder image
 > (`ghcr.io/stackopshq/libguestfs-tools`) itself is built on GitHub-hosted
 > runners (no nested virt needed for the build of the builder), so this
@@ -33,7 +33,7 @@ Hardware / hypervisor:
   default `LIBGUESTFS_MEMSIZE=4096` + base rootfs + sparsify scratch).
 
 OS:
-- **Rocky Linux 10** (or RHEL/AlmaLinux 10 — same package layout).
+- **Rocky Linux 10** (or RHEL/AlmaLinux 10: same package layout).
 - SELinux in **Enforcing** mode (do not disable).
 
 ## 1. System packages
@@ -61,7 +61,7 @@ sudo dnf -y install \
 >
 > `qemu-kvm` and `libvirt-daemon-driver-qemu` are needed on the **host** so
 > `/dev/kvm` exists and is accessible. The builder container brings its own
-> userspace tools (`qemu-img`, `virt-customize`, …) — but the kernel-side
+> userspace tools (`qemu-img`, `virt-customize`, …), but the kernel-side
 > KVM module lives on the host.
 
 Verify KVM is loaded:
@@ -172,7 +172,7 @@ code: 'MODULE_NOT_FOUND'
 ```
 
 even though the file is present on the host (`ls` works as `gh-runner`).
-There's no AVC entry — SELinux silently blocks the rootless container's
+There's no AVC entry: SELinux silently blocks the rootless container's
 read of `var_lib_t` files via the bind-mount.
 
 Apply a persistent fcontext rule so all `_work/` files (and any actions
@@ -185,7 +185,7 @@ sudo restorecon -RFv /var/lib/gh-runner/_work
 
 This is **mandatory** for any job that uses JavaScript-based actions
 (checkout, upload-artifact, cosign-installer, …) inside a `container:`
-job — i.e. virtually every reusable-workflow consumer here.
+job: i.e. virtually every reusable-workflow consumer here.
 
 > **Never** propose `setenforce 0` as a fix. Always trace AVCs with
 > `sudo ausearch -m AVC -ts recent` and adjust contexts/booleans.
@@ -210,11 +210,11 @@ Error: statfs /var/run/docker.sock: permission denied
 
 Three things have to be true:
 
-1. **`podman.socket` must be running** — creates the actual unix socket
+1. **`podman.socket` must be running**: creates the actual unix socket
    at `/run/podman/podman.sock`.
-2. **The socket must be readable by the `gh-runner` user/group** —
+2. **The socket must be readable by the `gh-runner` user/group**:
    default is `root:root mode 660`; needs adjustment.
-3. **The `/run/podman/` directory must be traversable by `gh-runner`** —
+3. **The `/run/podman/` directory must be traversable by `gh-runner`**:
    default is `mode 700` (root-only), blocks even
    `stat -L /var/run/docker.sock` for `gh-runner`.
 
@@ -247,7 +247,7 @@ sudo -u gh-runner stat -L /var/run/docker.sock | head -3
 ```
 
 > The runtime-dir mode drop-in only takes effect when systemd recreates
-> the directory — i.e. on `podman.service` restart or boot. If you've
+> the directory: i.e. on `podman.service` restart or boot. If you've
 > already started the socket once (with the default mode 700 dir), the
 > drop-in won't retro-apply; either restart `podman.service` explicitly
 > or `chmod 0755 /run/podman` once.
@@ -386,7 +386,7 @@ gh api -X PUT /orgs/open-img-cloud/actions/runner-groups/<group_id>/runners/<run
 When registering a new runner, pass `--runnergroup image-builders` to
 `config.sh` (already in §6).
 
-### 9.2 Ephemeral runners — NOT APPLIED, here's why
+### 9.2 Ephemeral runners: NOT APPLIED, here's why
 
 `--ephemeral` was tested and rolled back during the first end-to-end
 consumer run. The standalone-bare-metal pattern (register once with
@@ -400,10 +400,10 @@ first job runs (success OR failure), and the local agent shows
 
 GitHub's intended ephemeral patterns require external orchestration that
 mints a fresh registration token for each runner instance:
-- **JIT (Just-in-Time) runners** — an external service calls
+- **JIT (Just-in-Time) runners**: an external service calls
   `POST /orgs/.../actions/runners/generate-jitconfig` per job and starts
   a new runner process with the resulting one-shot config.
-- **Actions Runner Controller (ARC)** on Kubernetes — does the same
+- **Actions Runner Controller (ARC)** on Kubernetes: does the same
   thing automatically, scaling pods up/down per pending workflow.
 
 Neither is in scope for this 2-runner bare-metal setup. We **stay on
@@ -413,7 +413,7 @@ persistent runners** (no `--ephemeral` flag), and rely on the
 job state in any meaningful way; the `_work/` directory is cleaned
 between jobs by the runner agent).
 
-We **do** keep the `Restart=always` drop-in — it's still valuable for
+We **do** keep the `Restart=always` drop-in: it's still valuable for
 resilience against agent crashes and connection drops:
 
 ```sh
@@ -481,7 +481,7 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
 - **Runner auto-update**: keep the runner version current. The agent
   self-updates by default unless `--disableupdate` was passed at config
   time. After a self-update, `runsvc.sh` and `externals/node*/bin/*` get
-  re-extracted and **lose their `bin_t` SELinux label** — but the
+  re-extracted and **lose their `bin_t` SELinux label**, but the
   persistent `semanage fcontext` rules from §3.1 mean a `restorecon`
   reapplies them automatically. Run a final `restorecon -RFv` after any
   manual `config.sh` re-run to be safe.
@@ -502,7 +502,7 @@ GC simultaneously. `Persistent=true` runs a missed timer at next boot
 | `Cosign verification failed: certificate identity does not match`     | Builder image was rebuilt under a different repo/identity. Update `builder_cert_identity` input or revert to the canonical `stackopshq` source. |
 | AVC denial on `/var/lib/gh-runner/_work/...`                          | `sudo restorecon -Rv /var/lib/gh-runner` (or persistent fcontext, see §3.3).         |
 | Runner picks up jobs but they never start (queued forever)            | Labels mismatch. Confirm the runner has all of `self-hosted,Linux,kvm`.              |
-| `manifest unknown` when pulling `ghcr.io/stackopshq/libguestfs-tools:vN` | Tags on GHCR have no `v` prefix — use `:N`, `:N.M`, or `:N.M.P` (e.g. `:2`, not `:v2`). |
+| `manifest unknown` when pulling `ghcr.io/stackopshq/libguestfs-tools:vN` | Tags on GHCR have no `v` prefix: use `:N`, `:N.M`, or `:N.M.P` (e.g. `:2`, not `:v2`). |
 | `podman: Error: short-name resolution enforced but cannot prompt`     | The container ref needs to be fully qualified (it is, in the workflows). Check that no caller overrides `build_container` with a short name. |
 | `docker: command not found` at "Starting job container"               | Runner host missing the `docker` CLI shim. Install `podman-docker` (§1).             |
 | `Error: statfs /var/run/docker.sock: permission denied`               | `podman.socket` not running, or `/run/podman/` not traversable. Apply both drop-ins from §4. |

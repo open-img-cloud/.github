@@ -130,7 +130,7 @@ on:
       OIC_S3_SECRET:      { required: false }
       CF_ZONE_ID:         { required: false }
       CF_API_TOKEN:       { required: false }
-      # OpenStack (Infomaniak Public Cloud by default) — application credential.
+      # OpenStack (Infomaniak Public Cloud by default): application credential.
       # Required only when runtime_smoke=true && publish=true.
       OS_AUTH_URL:                       { required: false }
       OS_REGION_NAME:                    { required: false }
@@ -150,7 +150,7 @@ jobs:
       digest: ${{ steps.verify.outputs.digest }}
     steps:
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x — matches builder)
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x: matches builder)
 
       - name: Verify cosign keyless signature
         id: verify
@@ -272,7 +272,7 @@ jobs:
           # artifact (most distributors publish `<url>.sha256` next to the
           # binary). When present, verify; mismatch is fatal. When absent
           # (some upstreams don't publish checksums on stable URLs), warn
-          # and continue — the cosign signature on our published qcow2 is
+          # and continue: the cosign signature on our published qcow2 is
           # the authoritative integrity check downstream.
           sha_url="${UPSTREAM_URL}.sha256"
           if curl -fL --silent --show-error --retry 3 --retry-delay 5 \
@@ -280,7 +280,7 @@ jobs:
             expected=$(awk '{print $1}' build/work/base.sha256 | head -1)
             actual=$(sha256sum build/work/base | awk '{print $1}')
             if [[ "$expected" != "$actual" ]]; then
-              echo "::error::Upstream SHA256 mismatch — possible MITM or corrupted download"
+              echo "::error::Upstream SHA256 mismatch, possible MITM or corrupted download"
               echo "::error::  expected: $expected"
               echo "::error::  actual:   $actual"
               echo "::error::  url:      $UPSTREAM_URL"
@@ -289,7 +289,7 @@ jobs:
             echo "Upstream SHA256 verified: $actual"
             rm -f build/work/base.sha256
           else
-            echo "::warning::No .sha256 published at $sha_url — upstream integrity not verified at fetch time. Cosign signature on the produced qcow2 remains the downstream integrity guarantee."
+            echo "::warning::No .sha256 published at $sha_url, upstream integrity not verified at fetch time. Cosign signature on the produced qcow2 remains the downstream integrity guarantee."
           fi
 
       - name: Decompress base if needed
@@ -323,7 +323,7 @@ jobs:
 
       - name: Inject org-wide cloud-init policy drop-in
         # Drop-in 99_oic-policy.cfg is shared across all openimages.cloud
-        # cloud-init-based distros — datasource_list, disable_root,
+        # cloud-init-based distros: datasource_list, disable_root,
         # ssh_pwauth=false, mount_default_fields. Lives in
         # `templates/cloud.cfg.d/` of the shared `open-img-cloud/.github`
         # repo so a single change propagates to every distro on next
@@ -495,7 +495,7 @@ jobs:
           #
           # Boot firmware: BIOS by default (SeaBIOS, baked into qemu). For
           # UEFI variants we feed OVMF as pflash. We auto-detect from the
-          # output filename — convention is to embed `uefi` in the name
+          # output filename: convention is to embed `uefi` in the name
           # for UEFI builds (e.g. `alpine-3.23.4-uefi-x86_64.qcow2`).
           # OVMF_VARS must be writable, so copy the template.
           fw_args=()
@@ -516,7 +516,7 @@ jobs:
               -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code"
               -drive "if=pflash,format=raw,file=$work/OVMF_VARS.fd"
             )
-            echo "Smoke firmware: OVMF (UEFI) — code=$ovmf_code"
+            echo "Smoke firmware: OVMF (UEFI), code=$ovmf_code"
           else
             echo "Smoke firmware: SeaBIOS (BIOS, default)"
           fi
@@ -537,13 +537,13 @@ jobs:
 
           # 5. Wait until SSH answers with the marker file.
           # Two-phase loop so failures tell us *where* it broke:
-          #   Phase A — wait for the host port-forward to even accept a TCP
+          #   Phase A: wait for the host port-forward to even accept a TCP
           #             handshake (proves qemu is alive and SLIRP is
           #             routing). Note: this can false-positive on
           #             SLIRP-only acceptance before the guest sshd is
-          #             listening — that's tolerable because phase B then
+          #             listening: that's tolerable because phase B then
           #             retries SSH every 5s until sshd is actually up.
-          #   Phase B — wait for the cloud-init marker file via SSH (proves
+          #   Phase B: wait for the cloud-init marker file via SSH (proves
           #             the user-data was actually applied).
           ssh_opts="-i $work/key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR -p 2222 smoketest@127.0.0.1"
           deadline=$((SECONDS + TIMEOUT_S))
@@ -570,9 +570,9 @@ jobs:
           done
           if [[ "$marker_ok" -ne 1 ]]; then
             if [[ "$tcp_ok" -ne 1 ]]; then
-              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A — TCP 127.0.0.1:2222 never opened (guest did not boot, networking down, or — for UEFI — wrong firmware)"
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase A: TCP 127.0.0.1:2222 never opened (guest did not boot, networking down, or, for UEFI, wrong firmware)"
             else
-              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B — TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (SSH auth failed, or cloud-init did not write the marker)"
+              echo "::error::Smoke timed out after ${TIMEOUT_S}s in phase B, TCP up but cloud-init marker /etc/cloud-init-smoke-ok absent (SSH auth failed, or cloud-init did not write the marker)"
               # Last-ditch verbose SSH attempt to surface the auth handshake
               # in CI output (locked account / wrong key / sshd config).
               echo "::group::ssh -vvv (final attempt)"
@@ -603,7 +603,7 @@ jobs:
               kill -9 "$(cat "$work/qemu.pid")" 2>/dev/null || true
             fi
             echo "::group::guest filesystem post-mortem (guestfish)"
-            # NOTE: assembled via printf rather than a heredoc — the YAML
+            # NOTE: assembled via printf rather than a heredoc, the YAML
             # `run: |` block strips a fixed indent relative to the first
             # line, so a `<<'EOF'` terminator inside this block can't sit
             # at column 0 without breaking the YAML, and a heredoc's
@@ -711,7 +711,7 @@ jobs:
 
       - name: Install cosign
         if: ${{ inputs.sign }}
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x — matches builder)
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x: matches builder)
 
       - name: Cosign sign-blob (keyless)
         if: ${{ inputs.sign }}

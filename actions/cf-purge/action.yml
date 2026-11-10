@@ -34,7 +34,7 @@ runs:
           [[ -n "$line" ]] && urls+=("$line")
         done <<< "$CF_PATHS"
         if [[ ${#urls[@]} -eq 0 ]]; then
-          echo "No URLs to purge — skipping."
+          echo "No URLs to purge: skipping."
           exit 0
         fi
         body=$(printf '%s\n' "${urls[@]}" | jq -R . | jq -sc '{files: .}')

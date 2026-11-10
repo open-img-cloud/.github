@@ -1,4 +1,4 @@
-# openimages.cloud — Image catalog standards
+# openimages.cloud: Image catalog standards
 
 This document defines the requirements an image must satisfy to live in
 the openimages.cloud catalog. Reference for new onboardings, audits,
@@ -12,7 +12,7 @@ date and rationale.
 
 ---
 
-## A — Provenance & signing (MUST)
+## A. Provenance & signing (MUST)
 
 - **Cosign keyless** signature using sigstore-bundle format
   (`--new-bundle-format`). Bundle filename: `<artifact>.bundle`,
@@ -48,7 +48,7 @@ date and rationale.
   caller explicitly sets `verify_builder: false` and documents why
   in its `release.yml`.
 
-## B — Distribution (MUST)
+## B. Distribution (MUST)
 
 - **Per-distro public bucket** on Infomaniak Object Storage (Ceph S3,
   Public Cloud project `Images_Storage`, region `dc4-a`) named
@@ -57,14 +57,14 @@ date and rationale.
 - **Worker `images-router` route** active: the bucket name MUST be in
   `ALLOWED_BUCKETS` in `wrangler.toml`.
 - **URL pattern**:
-  - Versioned: `https://images.openimages.cloud/<slug>/<version>/<filename>`
-    — `Cache-Control: public, max-age=31536000, immutable`.
-  - Latest alias: `https://images.openimages.cloud/<slug>/latest/<filename>`
-    — `Cache-Control: public, max-age=300`.
+  - Versioned: `https://images.openimages.cloud/<slug>/<version>/<filename>`,
+    with `Cache-Control: public, max-age=31536000, immutable`.
+  - Latest alias: `https://images.openimages.cloud/<slug>/latest/<filename>`,
+    with `Cache-Control: public, max-age=300`.
 - **Index HTML** auto-generated at the bucket prefix (`/index.html`)
   showing all files, sizes, and verification snippet.
 
-## C — Image content for cloud-init-based distros (MUST)
+## C. Image content for cloud-init-based distros (MUST)
 
 - `cloud-init` ≥ 24.x installed and enabled at boot.
 - The reusable libguestfs workflow auto-injects the org-wide drop-in
@@ -96,7 +96,7 @@ date and rationale.
   resolution).
 - **Hostname** controllable via cloud metadata (no hardcoded value).
 
-## D — Image content for non-cloud-init distros (MUST when applicable)
+## D. Image content for non-cloud-init distros (MUST when applicable)
 
 - NixOS / FreeBSD don't ship cloud-init. They MUST provide an
   equivalent metadata fetcher that:
@@ -107,12 +107,12 @@ date and rationale.
 - Default user, SSH server, serial console, and root-login policy
   same as section C.
 
-## E — Format & sidecars (MUST)
+## E. Format & sidecars (MUST)
 
 - **`qcow2`** sparse + compressed. Output of `virt-sparsify --compress`
   for libguestfs path; `qcow2-compressed` format for nix-flake or DIB
   path.
-- **`x86_64`** at minimum. ARM64 is a roadmap target — see
+- **`x86_64`** at minimum. ARM64 is a roadmap target: see
   [Onboarding roadmap](../README.md).
 - **Sidecars per artifact** in the same path:
   - `<artifact>.md5`
@@ -124,7 +124,7 @@ date and rationale.
 - **`SHA256SUMS`** (multi-file) when a version directory ships >1
   artifact (variants / firmware / arch).
 
-## F — Repository structure (MUST)
+## F. Repository structure (MUST)
 
 ```
 <repo>/
@@ -148,7 +148,7 @@ The release.yml MUST call one of the three approved reusables:
 `build-nix-flake-image.yml`. Adding a new reusable requires updating
 this document AND the cert-identity regex in section A.
 
-## G — Operations (SHOULD)
+## G. Operations (SHOULD)
 
 - **`watch.yml` cron** at a unique HH:MM minute per repo to spread
   load on the runner pool. Current allocations: alpaquita 06:17,
@@ -163,7 +163,7 @@ this document AND the cert-identity regex in section A.
   (`publish: true`). `workflow_dispatch` defaults to
   `publish: false` (dry-run).
 
-## H — Image size (SHOULD)
+## H. Image size (SHOULD)
 
 - Target: ≤ 1.5× the upstream image OR ≤ 1 GB, whichever is lower.
 - Justify exceptions in the README at the top, with the levers we
@@ -172,7 +172,7 @@ this document AND the cert-identity regex in section A.
   - alpine: 95 MB / alpaquita: 175 MB / AL2: 540 MB / AL2023: 542 MB
   - octavia: 365 MB / OL9: 754 MB / OL10: 1024 MB / nixos: 600-800 MB
 
-## I — Lifecycle (SHOULD)
+## I. Lifecycle (SHOULD)
 
 - **Active**: distro is supported by upstream. README + repo
   description plain.
@@ -184,7 +184,7 @@ this document AND the cert-identity regex in section A.
   and a link to the tracking issue. Build workflow MAY remain on
   but produce no green release until the issue is addressed.
 
-## J — Validation (SHOULD)
+## J. Validation (SHOULD)
 
 - The reusable workflow's smoke step is **mandatory for libguestfs**
   (boot the qcow2 in qemu, ConfigDrive seed with cloud-init user-data,
@@ -200,7 +200,7 @@ this document AND the cert-identity regex in section A.
   weekly and re-validates every active repo's `latest/` artifact
   against the same checklist.
 
-## K — Runtime smoke on a live OpenStack (SHOULD)
+## K. Runtime smoke on a live OpenStack (SHOULD)
 
 Static artefact validation (section J) confirms an image is well-formed
 and signed; it does not prove that it actually boots, that cloud-init

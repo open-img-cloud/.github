@@ -3,7 +3,7 @@ description: 'Uploads a directory of artifacts to Infomaniak Object Storage (Cep
 
 # Bucket model: one public bucket per distribution, named after `os_name`, in
 # the Infomaniak Public Cloud project `Images_Storage`. The bucket must exist
-# before this action runs — the action does not create buckets. Path inside
+# before this action runs: the action does not create buckets. Path inside
 # the bucket: `<version>/<filename>`, plus an optional `latest/` mirror.
 # Public reads go through the images-router Worker (images.openimages.cloud).
 
@@ -120,7 +120,7 @@ runs:
         <!DOCTYPE html>
         <html lang="en"><head>
         <meta charset="utf-8">
-        <title>${OS_NAME} ${VERSION} — Open Images</title>
+        <title>${OS_NAME} ${VERSION}: Open Images</title>
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <style>
           body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:960px;margin:2rem auto;padding:0 1rem;color:#222}

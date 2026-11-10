@@ -42,7 +42,7 @@ Inherited by reusable workflows via `secrets: inherit`. Configure once at the
 org level (Settings → Secrets and variables → Actions → New organization secret)
 and grant access to the runner-group repos (or "Selected repositories"):
 
-- `OIC_S3_KEY_ID`, `OIC_S3_SECRET` — S3 credentials of the Infomaniak
+- `OIC_S3_KEY_ID`, `OIC_S3_SECRET`: S3 credentials of the Infomaniak
   Public Cloud project `Images_Storage` (Object Storage)
 - `CF_ZONE_ID`, `CF_API_TOKEN`
 
@@ -89,7 +89,7 @@ Each image repo gets its **own public bucket** on Infomaniak Object
 Storage (Ceph S3, Public Cloud project `Images_Storage`, region `dc4-a`),
 named exactly after the repo / OS slug (`os_name`). It is the single
 source of truth: versioning is enabled (non-current versions kept 30
-days). The bucket must exist before a release fires — the publish action
+days). The bucket must exist before a release fires: the publish action
 does not create it.
 
 ```
@@ -123,7 +123,7 @@ Each release publishes alongside the qcow2:
 
 - `<filename>.sha256`, `.sha1`, `.md5` per-file checksums
 - `SHA256SUMS` (or `SHA256SUMS-<variant>` when the caller passes the
-  `variant` input — see "Multi-variant builds" below)
+  `variant` input: see "Multi-variant builds" below)
 - `<filename>.bundle` cosign sigstore-bundle (signature + certificate +
   Rekor proof bundled, modern cosign 3.x format)
 - `MANIFEST.json` (or `MANIFEST-<variant>.json`) build metadata, including
@@ -142,7 +142,7 @@ with a freshly-generated **ConfigDrive** seed:
 - ConfigDrive seed layout written to a 4MB vfat image labeled `CONFIG-2`:
   - `/openstack/latest/meta_data.json` (uuid + hostname)
   - `/openstack/latest/user_data` (cloud-config: smoketest user + marker file)
-- Built via `mkfs.vfat` + `guestfish` (no genisoimage/mtools needed —
+- Built via `mkfs.vfat` + `guestfish` (no genisoimage/mtools needed:
   all tools already in the stackopshq builder).
 - qcow2 booted via a backing-file overlay so the release artifact stays
   byte-identical post-test.
@@ -175,7 +175,7 @@ pattern there).
 ## Multi-variant builds (`variant` input)
 
 When a single OS produces multiple binary variants for the same version
-— e.g. Alpaquita's `glibc` + `musl` matrix at the same `2026.04.14` —
+(e.g. Alpaquita's `glibc` + `musl` matrix at the same `2026.04.14`),
 the caller workflow runs the reusable workflow once per variant. Without
 care, the second run would overwrite the first run's `MANIFEST.json`
 and `SHA256SUMS` at the shared bucket path.
@@ -317,7 +317,7 @@ virt-customize -a "$QCOW2" \
 # Prints the latest Alpaquita stream version (single line).
 #
 # Bell-Sw publishes Alpaquita Stream as a rolling release at a stable URL
-# pointing to "latest" — no redirect, no version-bearing metadata in the
+# pointing to "latest": no redirect, no version-bearing metadata in the
 # URL or content-disposition header. We synthesise a date-based version
 # from the upstream qcow2.xz Last-Modified HTTP header (YYYY.MM.DD).
 # Each new upstream rebuild bumps the date.
@@ -364,5 +364,5 @@ Versioned objects are immutable and served with `Cache-Control: max-age=31536000
 The `latest/` directory is a snapshot copy of the most recent build; it carries
 `max-age=300` and is purged from the Cloudflare edge after each release.
 
-Never link to `latest/` from documentation that needs reproducibility — link to
+Never link to `latest/` from documentation that needs reproducibility: link to
 the versioned path instead.
