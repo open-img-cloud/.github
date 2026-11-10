@@ -182,12 +182,21 @@ runs:
         fi
         ok "Auth OK against $OS_AUTH_URL ($OS_REGION_NAME)"
 
+        # UEFI-only artefacts (e.g. alpine-*-uefi-*) must be booted with OVMF:
+        # without hw_firmware_type=uefi Nova boots SeaBIOS and the guest
+        # never comes up. Detect from the filename.
+        FW_PROPS=()
+        if [[ "$FILENAME" == *uefi* ]]; then
+          FW_PROPS=(--property hw_firmware_type=uefi --property hw_machine_type=q35)
+          info "UEFI artefact: setting hw_firmware_type=uefi, hw_machine_type=q35"
+        fi
+
         # ---- 1. Glance: create record, then web-download (fall back to local upload if unsupported) ----
         info "Glance: creating image record $IMG_NAME"
         openstack image create \
           --disk-format qcow2 --container-format bare \
           --tag "$TAG" \
-          --property hw_qemu_guest_agent=yes \
+          --property hw_qemu_guest_agent=yes "${FW_PROPS[@]}" \
           "$IMG_NAME" >/dev/null
 
         info "Glance: triggering web-download import from $IMG_URL"
@@ -229,7 +238,7 @@ runs:
             --disk-format qcow2 --container-format bare \
             --file "/tmp/${FILENAME}" \
             --tag "$TAG" \
-            --property hw_qemu_guest_agent=yes \
+            --property hw_qemu_guest_agent=yes "${FW_PROPS[@]}" \
             "$IMG_NAME" >/dev/null
           rm -f "/tmp/${FILENAME}"
         fi
