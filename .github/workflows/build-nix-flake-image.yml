@@ -150,11 +150,13 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
     container:
       image: ${{ inputs.build_container }}
-      # Nix builds inside its own sandbox; the container itself does
-      # NOT need --privileged. `--user root` only because the GHA
-      # runner default-uid mapping under Podman is awkward, and Nix's
-      # multi-user mode wants /nix to be writable by the build user.
-      options: --user root
+      # --privileged: since NixOS 26.05, make-disk-image builds the disk
+      # inside a QEMU VM that reaches /nix/store through virtiofsd, which
+      # must adjust its own capabilities ("failed to sync capabilities
+      # with the kernel" in an unprivileged container). It also exposes
+      # /dev/kvm, so that VM runs accelerated instead of under TCG.
+      # `--user root`: Nix is installed single-user as root in the job.
+      options: --user root --privileged
     outputs:
       version: ${{ steps.vars.outputs.version }}
       output_filename: ${{ steps.vars.outputs.output_filename }}
