@@ -73,6 +73,10 @@ on:
       cf_public_hostname:
         type: string
         default: 'images.openimages.cloud'
+      cdn_origin:
+        description: 'Origin the images-router Worker fetches from, as <endpoint>/<tenant>: (its cache key, needed for purges).'
+        type: string
+        default: 'https://s3.gva2.infomaniak.cloud/c0862b7f7b6849508bbcd74fb00e7fe2:'
       shared_actions_ref:
         type: string
         default: 'main'
@@ -379,6 +383,8 @@ jobs:
         shell: bash
         env:
           HOST: ${{ inputs.cf_public_hostname }}
+          ORIGIN: ${{ inputs.cdn_origin }}
+          BUCKET: ${{ inputs.bucket_name || inputs.os_name }}
           OS_NAME: ${{ inputs.os_name }}
           OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
           VARIANT: ${{ inputs.variant }}
@@ -399,7 +405,14 @@ jobs:
               echo "${base}/SHA256SUMS"
             fi
             echo "https://${HOST}/${OS_NAME}/"
-          } > /tmp/purge-paths.txt
+          } > /tmp/purge-public.txt
+          # images-router caches its origin subrequests under the Infomaniak
+          # URL, not the public one: purging only public URLs leaves the
+          # Worker's cache untouched. Purge the origin twin of every URL
+          # (directory URLs map to their index.html object).
+          sed -E "s#^https://${HOST}/${OS_NAME}/#${ORIGIN}${BUCKET}/#; s#/\$#/index.html#" \
+            /tmp/purge-public.txt > /tmp/purge-origin.txt
+          cat /tmp/purge-public.txt /tmp/purge-origin.txt > /tmp/purge-paths.txt
           {
             echo 'paths<<PURGE_EOF'
             cat /tmp/purge-paths.txt
