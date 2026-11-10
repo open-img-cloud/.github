@@ -291,6 +291,30 @@ runs:
         info "Tenant network: $TENANT_NET"
 
         # ---- 4. Boot instance ----
+        # Nova refuses a flavor whose root disk is smaller than the image's
+        # virtual size (Amazon Linux images declare 25 GiB, the default
+        # flavor has 20 GB). Upsize to the smallest flavor with a large
+        # enough disk and at least the same RAM.
+        IMG_VSIZE=$(openstack image show -f value -c virtual_size "$IMG_NAME" 2>/dev/null || echo "")
+        if [[ "$IMG_VSIZE" =~ ^[0-9]+$ ]]; then
+          need_gb=$(( (IMG_VSIZE + 1073741823) / 1073741824 ))
+          read -r flv_disk flv_ram < <(openstack flavor show -f value -c disk -c ram "$FLAVOR" | tr '\n' ' ')
+          if (( flv_disk < need_gb )); then
+            bigger=$(openstack flavor list --public -f json --long | python3 -c '
+        import json, sys
+        need, ram = int(sys.argv[1]), int(sys.argv[2])
+        ok = [f for f in json.load(sys.stdin) if f["Disk"] >= need and f["RAM"] >= ram]
+        ok.sort(key=lambda f: (f["Disk"], f["RAM"], f["VCPUs"]))
+        print(ok[0]["Name"] if ok else "")
+        ' "$need_gb" "$flv_ram")
+            if [[ -z "$bigger" ]]; then
+              bad "No flavor with a ${need_gb} GB disk for this image"
+              exit 1
+            fi
+            info "Image needs ${need_gb} GB, $FLAVOR has ${flv_disk} GB: using $bigger"
+            FLAVOR="$bigger"
+          fi
+        fi
         info "Boot $SRV_NAME (flavor=$FLAVOR)"
         openstack server create \
           --image "$IMG_NAME" \
