@@ -1,102 +1,106 @@
-![Hero image](https://raw.githubusercontent.com/open-img-cloud/.github/refs/heads/main/profile/img/open-images-logo.png)
+![Open Image Cloud](https://raw.githubusercontent.com/open-img-cloud/.github/refs/heads/main/profile/img/open-images-logo.png)
 
-**Open Image Cloud** publishes ready-to-use, **cosign-signed**, **reproducible** cloud images for **OpenStack** and **Proxmox**.
+**Open Image Cloud** publishes ready-to-use, **signed**, **reproducible** cloud images for **OpenStack** and **Proxmox**, built in the open from official upstream releases.
 
-- 🌐 **Website**: <https://openimages.cloud>
-- 📦 **Image registry**: <https://images.openimages.cloud> (Cloudflare CDN in front of Swiss-hosted Infomaniak Object Storage)
-- 📜 **Conventions & contribution guide**: [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md)
+- 🌐 **Website and catalog**: <https://openimages.cloud>
+- 📦 **Image registry**: <https://images.openimages.cloud> (Swiss-hosted Infomaniak Object Storage behind the Cloudflare CDN)
+- 🔐 **Verification guide**: <https://openimages.cloud/verify/>
+- 📜 **Conventions and image standards**: [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md), [`IMAGE_STANDARDS.md`](https://github.com/open-img-cloud/.github/blob/main/docs/IMAGE_STANDARDS.md)
 
 ---
 
 ## What you get
 
-- 🔁 **Reproducible builds** on GitHub Actions with pinned upstream sources and a tagged builder container; commit, run URL, and builder digest are embedded in every image's `MANIFEST.json`.
-- 🔒 **Keyless cosign signatures** via GitHub OIDC: verify any image without managing keys on your side.
-- ☁️ **Native cloud-init** for OpenStack (ConfigDrive), Proxmox (NoCloud), and any provider that consumes either.
-- 📦 **Versioned & immutable** paths on the public registry: `images.openimages.cloud/<os>/<version>/<filename>`. A mutable `latest/` alias is kept fresh after each release.
+- 🔁 **Reproducible builds** in public GitHub Actions workflows, from pinned upstream artefacts and a signed builder container. Commit, CI run and builder digest are recorded in every image's `MANIFEST.json`.
+- 🧪 **Boot-tested twice** before and after publishing: in QEMU with a ConfigDrive, then on a live OpenStack (cloud-init, SSH and DNS must pass).
+- 🔒 **Keyless cosign signatures** bound to the identity of our build workflows and logged in Sigstore's Rekor: nothing to manage on your side.
+- ☁️ **One cloud-init policy** for every distribution: OpenStack (ConfigDrive), Proxmox (NoCloud) and any provider that speaks either.
+- 📌 **Versioned, immutable paths**: `images.openimages.cloud/<os>/<version>/<file>`, plus a `latest/` alias refreshed on each release.
 
 ---
 
 ## Available images
 
+Versions below are read live from each image's published manifest.
+
 ### Linux
 
-| OS                | Latest               | Variants     | Status                | Repository |
-|-------------------|----------------------|--------------|-----------------------|------------|
-| Alpaquita Linux   | `2026.04.14`         | glibc, musl  | ✅ Stable             | [`alpaquita-linux`](https://github.com/open-img-cloud/alpaquita-linux) |
-| Alpine Linux      | `3.23.4`             | BIOS, UEFI   | ✅ Stable             | [`alpine-linux`](https://github.com/open-img-cloud/alpine-linux) |
-| Amazon Linux 2    | `2.0.20260508.0`     | n/a          | 📦 Maintenance only<sup>1</sup> | [`amazon-linux-2`](https://github.com/open-img-cloud/amazon-linux-2) |
-| Amazon Linux 2023 | `2023.11.20260509.0` | n/a          | ✅ Stable             | [`amazon-linux-2023`](https://github.com/open-img-cloud/amazon-linux-2023) |
-| Gentoo Linux      | `2026.05.03`         | n/a          | 🚧 Build pipeline WIP | [`gentoo-linux`](https://github.com/open-img-cloud/gentoo-linux) |
-| NixOS             | `25.11`              | n/a          | ✅ Stable             | [`nixos`](https://github.com/open-img-cloud/nixos) |
-| Oracle Linux 9    | `9.7-b269`           | n/a          | ✅ Stable             | [`oracle-linux-9`](https://github.com/open-img-cloud/oracle-linux-9) |
-| Oracle Linux 10   | `10.1-b270`          | n/a          | ✅ Stable             | [`oracle-linux-10`](https://github.com/open-img-cloud/oracle-linux-10) |
+| Image | Latest | Variants | Login user | Status | Repository |
+|---|---|---|---|---|---|
+| [Alpaquita Linux](https://openimages.cloud/images/alpaquita-linux/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Falpaquita-linux%2Flatest%2FMANIFEST-glibc.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | glibc, musl | `alpaquita` | ✅ Stable | [`alpaquita-linux`](https://github.com/open-img-cloud/alpaquita-linux) |
+| [Alpine Linux](https://openimages.cloud/images/alpine-linux/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Falpine-linux%2Flatest%2FMANIFEST-uefi.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | BIOS, UEFI | `alpine` | ✅ Stable | [`alpine-linux`](https://github.com/open-img-cloud/alpine-linux) |
+| [Amazon Linux 2023](https://openimages.cloud/images/amazon-linux-2023/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Famazon-linux-2023%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `ec2-user` | ✅ Stable | [`amazon-linux-2023`](https://github.com/open-img-cloud/amazon-linux-2023) |
+| [NixOS](https://openimages.cloud/images/nixos/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Fnixos%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `nixos` | ✅ Stable | [`nixos`](https://github.com/open-img-cloud/nixos) |
+| [Oracle Linux 9](https://openimages.cloud/images/oracle-linux-9/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Foracle-linux-9%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `cloud-user` | ✅ Stable | [`oracle-linux-9`](https://github.com/open-img-cloud/oracle-linux-9) |
+| [Oracle Linux 10](https://openimages.cloud/images/oracle-linux-10/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Foracle-linux-10%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `cloud-user` | ✅ Stable | [`oracle-linux-10`](https://github.com/open-img-cloud/oracle-linux-10) |
+| [Amazon Linux 2](https://openimages.cloud/images/amazon-linux-2/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Famazon-linux-2%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `ec2-user` | 📦 Archive<sup>1</sup> | [`amazon-linux-2`](https://github.com/open-img-cloud/amazon-linux-2) |
+| Gentoo Linux | not published yet | | | 🚧 Build pipeline WIP | [`gentoo-linux`](https://github.com/open-img-cloud/gentoo-linux) |
 
-<sup>1</sup> Amazon Linux 2 reached upstream EOL on 2025-06-30. Builds are kept available for extended-support customers; new deployments should target Amazon Linux 2023.
+<sup>1</sup> Amazon Linux 2 reached end of life upstream on 2025-06-30. Builds continue for existing workloads; new deployments should target Amazon Linux 2023.
 
 ### OpenStack components
 
-| Component       | Latest    | Older releases       | Status     | Repository |
-|-----------------|-----------|----------------------|------------|------------|
-| Octavia Amphora | `2026.1`  | `2025.2`, `2025.1`   | ✅ Stable  | [`octavia-amphora`](https://github.com/open-img-cloud/octavia-amphora) |
+| Component | Releases | Status | Repository |
+|---|---|---|---|
+| [Octavia Amphora](https://openimages.cloud/images/octavia-amphora/) | `2026.1`, `2025.2`, `2025.1` | ✅ Stable | [`octavia-amphora`](https://github.com/open-img-cloud/octavia-amphora) |
 
-> Octavia images are pinned to the matching OpenStack release; older paths stay immutable on the registry so you can keep targeting the OpenStack release of your existing deployment.
+> Amphora images follow the OpenStack release series. Older series stay at their immutable paths, so you can keep matching the release of your deployment.
 
-### Windows
+### In preparation
 
-| OS                  | Status       | Repository |
-|---------------------|--------------|------------|
-| Windows Server 2022 | 🚧 Planned   | [`windows-server-2022`](https://github.com/open-img-cloud/windows-server-2022) |
+| Image | Purpose | Repository |
+|---|---|---|
+| Windows Server 2022 | Windows guests with cloudbase-init | [`windows-server-2022`](https://github.com/open-img-cloud/windows-server-2022) |
+| Cloud Rescue | Bootable rescue and diagnostic image | [`cloud-rescue`](https://github.com/open-img-cloud/cloud-rescue) |
+| FreeBSD | FreeBSD guests for OpenStack | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
 
-### Special-purpose
-
-| Image          | Purpose                                | Status      | Repository |
-|----------------|----------------------------------------|-------------|------------|
-| Cloud Rescue   | Bootable rescue / diagnostic image     | 🚧 Planned  | [`cloud-rescue`](https://github.com/open-img-cloud/cloud-rescue) |
-
-> Need an OS that's not on this list? [Open an issue](https://github.com/open-img-cloud/.github/issues): adoption is driven by demand.
+> Need another distribution? [Open an issue](https://github.com/open-img-cloud/.github/issues): new images are added on demand.
 
 ---
 
 ## Verify a downloaded image
 
-All images are signed via cosign keyless (GitHub OIDC). Verify before booting:
-
 ```bash
-# 1. Download the image and its cosign bundle
-curl -fLO https://images.openimages.cloud/alpine-linux/3.23.4/alpine-3.23.4-uefi-x86_64.qcow2
-curl -fLO https://images.openimages.cloud/alpine-linux/3.23.4/alpine-3.23.4-uefi-x86_64.qcow2.bundle
+curl -fLO https://images.openimages.cloud/alpine-linux/3.24.1/alpine-3.24.1-uefi-x86_64.qcow2
+curl -fLO https://images.openimages.cloud/alpine-linux/3.24.1/alpine-3.24.1-uefi-x86_64.qcow2.bundle
 
-# 2. Verify the signature
-cosign verify-blob alpine-3.23.4-uefi-x86_64.qcow2 \
-  --bundle alpine-3.23.4-uefi-x86_64.qcow2.bundle --new-bundle-format \
-  --certificate-identity-regexp 'https://github.com/open-img-cloud/' \
+cosign verify-blob alpine-3.24.1-uefi-x86_64.qcow2 \
+  --bundle alpine-3.24.1-uefi-x86_64.qcow2.bundle --new-bundle-format \
+  --certificate-identity-regexp '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-`Verified OK` means the image was built by a GitHub Actions workflow under the `open-img-cloud` org. Inspect provenance via `MANIFEST.json` next to the image.
+`Verified OK` means the file was produced, unmodified, by one of our reusable build workflows. The [verification guide](https://openimages.cloud/verify/) also covers checksums and reading the provenance manifest.
 
 ---
 
 ## How it works
 
-The build pipeline lives in [`open-img-cloud/.github`](https://github.com/open-img-cloud/.github) as a set of **reusable GitHub workflows** plus **composite actions**. Each image repo stays thin: `VERSION`, a `customize.sh` (libguestfs) or `dib-build.sh` (diskimage-builder) hook, a `detect-upstream.sh` watcher, plus two thin caller workflows. See [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md) for the full contract.
+Everything runs from this repository: **reusable workflows** and **composite actions** shared by every image repo. An image repo stays thin: a pinned `VERSION`, one build hook and an upstream watcher. Three build engines cover the catalog:
 
-Storage topology: [Infomaniak Object Storage](https://www.infomaniak.com/en/hosting/public-cloud/object-storage) (S3, hosted in Switzerland, single source of truth) → served behind the Cloudflare CDN at <https://images.openimages.cloud>. Routing is handled by [`images-router`](https://github.com/open-img-cloud/images-router), a tiny Cloudflare Worker that maps `/<os>/*` to per-distribution buckets.
+| Engine | Used for | Hook |
+|---|---|---|
+| libguestfs | Customising official upstream cloud images | `build/customize.sh` |
+| diskimage-builder | Images assembled from scratch (Octavia, Gentoo) | `build/dib-build.sh` |
+| Nix flake | NixOS, through the native NixOS image framework | `build/nix-build.sh` |
+
+A daily watcher opens a pull request when upstream ships a new version. A tag on the merged version builds, boot-tests, signs and publishes the image. Builds run on GitHub-hosted runners with KVM.
+
+Storage: [Infomaniak Object Storage](https://www.infomaniak.com/en/hosting/public-cloud/object-storage) in Switzerland is the single source of truth, served through the Cloudflare CDN by [`images-router`](https://github.com/open-img-cloud/images-router). The website lives in [`oic-website`](https://github.com/open-img-cloud/oic-website).
 
 ---
 
 ## Licensing
 
-The infrastructure, workflows, and tooling published in this org are released under permissive open-source licenses (Apache-2.0 / MIT depending on the repo: see each repository's `LICENSE` file).
+Image repositories are released under **GPL-2.0** (GPL-3.0 for `freebsd`), the website under **Apache-2.0**. See each repository's `LICENSE`.
 
-⚠️ **The OS images themselves inherit the licensing terms of their upstream distributions** (Alpine, Amazon Linux, NixOS, Oracle Linux, etc.). Review the original licenses before using any image in production.
+⚠️ **The OS images themselves keep the licensing terms of their upstream distributions** (Alpine, Amazon Linux, NixOS, Oracle Linux…). Review them before production use.
 
 ---
 
 ## Contribute
 
-PRs and issues are welcome: whether to add a new distribution, propose an architecture (arm64, riscv64), report a security issue, or improve the build pipeline. Start with [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md) if you want to add a new image repo.
+Issues and pull requests are welcome: a new distribution, another architecture (arm64, riscv64), a security report or a pipeline improvement. To add an image repo, start with [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md).
 
 ---
 
