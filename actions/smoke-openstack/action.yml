@@ -282,7 +282,7 @@ runs:
           for id in $(openstack image list -f value -c ID --name "$IMG_NAME" 2>/dev/null); do
             openstack image delete "$id" >/dev/null 2>&1 || true
           done
-          curl -fsSL "$IMG_URL" -o "/tmp/${FILENAME}"
+          curl -fsSL -A "openimages-ci" "$IMG_URL" -o "/tmp/${FILENAME}"
           info "Uploading $(du -h /tmp/${FILENAME} | cut -f1) to Glance (synchronous)…"
           openstack image create \
             --disk-format qcow2 --container-format bare \

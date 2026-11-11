@@ -141,7 +141,7 @@ runs:
         info "Cosign verify-blob (downloads ~$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size B") qcow2)"
         tmpd=$(mktemp -d)
         if curl -fsSLO --output-dir "$tmpd" "$BASE/${FILENAME}.bundle" \
-           && curl -fsSLO --output-dir "$tmpd" "$BASE/${FILENAME}"; then
+           && curl -fsSLO -A "openimages-ci" --output-dir "$tmpd" "$BASE/${FILENAME}"; then
           if cosign verify-blob \
               --bundle "$tmpd/${FILENAME}.bundle" \
               --new-bundle-format \
