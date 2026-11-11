@@ -1,0 +1,109 @@
+name: Catalog audit
+
+# Weekly re-validation of every published image (IMAGE_STANDARDS.md, J):
+# for each catalog entry and variant, the latest/ artefact is checked with
+# the same validate-image action as a release (MANIFEST keys, sidecars,
+# cosign signature, cache headers, size). Failures are reported in a
+# single "Catalog audit" issue in this repository.
+#
+# Triggered weekly by the images-router Cloudflare cron (workflow_dispatch,
+# never disabled for inactivity); the schedule below is a fallback.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 4 * * 1'   # Monday 04:30 UTC (fallback)
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: catalog-audit
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - name: List published artefacts from the catalog
+        id: list
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/open-img-cloud/oic-website/main/src/data/images.yaml -o images.yaml
+          python3 - <<'PY'
+          import json, os, urllib.request, yaml
+          cdn = "https://images.openimages.cloud"
+          items = []
+          for img in yaml.safe_load(open("images.yaml"))["images"]:
+              variants = [v["id"] for v in img.get("variants", [])] or [""]
+              for v in variants:
+                  name = f"MANIFEST-{v}.json" if v else "MANIFEST.json"
+                  url = f"{cdn}/{img['os_name']}/latest/{name}"
+                  try:
+                      # Cloudflare rejects the default Python-urllib agent (403).
+                      req = urllib.request.Request(url, headers={"User-Agent": "openimages-catalog-audit"})
+                      m = json.load(urllib.request.urlopen(req, timeout=30))
+                      items.append({"os_name": img["os_name"], "version": m["version"],
+                                    "filename": m["filename"], "variant": v})
+                  except Exception as e:
+                      # Unreachable manifest: still audited, the job fails visibly.
+                      items.append({"os_name": img["os_name"], "version": "missing",
+                                    "filename": f"latest/{name} unreachable ({e})", "variant": v})
+          print(json.dumps(items, indent=2))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps({"include": items}) + "\n")
+          PY
+
+  validate:
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    name: ${{ matrix.os_name }} ${{ matrix.version }} ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - name: Manifest reachable
+        if: matrix.version == 'missing'
+        run: |
+          echo "::error::${{ matrix.os_name }}: ${{ matrix.filename }}"
+          exit 1
+      - name: Validate against IMAGE_STANDARDS.md
+        if: matrix.version != 'missing'
+        uses: ./actions/validate-image
+        with:
+          os_name: ${{ matrix.os_name }}
+          version: ${{ matrix.version }}
+          filename: ${{ matrix.filename }}
+          variant: ${{ matrix.variant }}
+
+  report:
+    needs: [discover, validate]
+    if: always() && needs.discover.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open, update or close the "Catalog audit" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          failed=$(gh api "repos/$REPO/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            -q '[.jobs[]|select(.name!="discover" and .name!="report" and .conclusion=="failure")|"- "+.name]|join("\n")')
+          issue=$(gh issue list -R "$REPO" --state open --search "Catalog audit in:title" --json number -q '.[0].number // empty')
+          if [[ -n "$failed" ]]; then
+            body=$(printf 'Weekly catalog audit found published images that no longer meet IMAGE_STANDARDS.md.\n\n%s\n\nRun: %s\n' "$failed" "$RUN_URL")
+            if [[ -n "$issue" ]]; then
+              gh issue comment "$issue" -R "$REPO" --body "$body"
+            else
+              gh issue create -R "$REPO" --title "Catalog audit: failing images" --body "$body"
+            fi
+            exit 1
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" -R "$REPO" --comment "All published images pass again: $RUN_URL"
+          fi
+          echo "All published images pass."
