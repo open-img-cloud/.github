@@ -411,8 +411,15 @@ runs:
         if echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
         elif echo "$ci" | grep -q "status: error"; then
-          bad "cloud-init in error state: see console log"
-          openstack console log show "$SRV_NAME" | tail -80 || true
+          bad "cloud-init in error state"
+          # The serial console is often empty on cloud images: read the
+          # cause over SSH instead (detailed status + warnings/errors).
+          echo "::group::cloud-init status --long"
+          echo "$ci"
+          echo "::endgroup::"
+          echo "::group::cloud-init warnings and errors"
+          $SSH 'sudo grep -E "WARNING|ERROR|Traceback|failed" /var/log/cloud-init.log | tail -40' || true
+          echo "::endgroup::"
         else
           # Last resort: check that cloud-init at least wrote a final-message
           if $SSH 'sudo grep -q "Cloud-init.*finished" /var/log/cloud-init.log 2>/dev/null'; then
