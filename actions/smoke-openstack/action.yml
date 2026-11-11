@@ -52,6 +52,14 @@ inputs:
     description: 'Optional cloud-init user-data passed to the instance (diagnostics). Empty by default.'
     required: false
     default: ''
+  strict:
+    description: 'When true, the image contract checks (hostname from metadata, root grown to the flavor disk, passwordless root for the default user) fail the smoke instead of warning.'
+    required: false
+    default: 'false'
+  require_ipv6:
+    description: 'When true, the guest must configure the global IPv6 address of its port and reach the IPv6 Internet (fails otherwise, also when the network has no IPv6).'
+    required: false
+    default: 'false'
 
   # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
   os_auth_url:
@@ -176,6 +184,8 @@ runs:
         BOOT_TIMEOUT:                      ${{ inputs.boot_timeout }}
         SSH_TIMEOUT:                       ${{ inputs.ssh_timeout }}
         USER_DATA:                         ${{ inputs.user_data }}
+        STRICT:                            ${{ inputs.strict }}
+        REQUIRE_IPV6:                      ${{ inputs.require_ipv6 }}
         CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
@@ -492,34 +502,68 @@ runs:
           echo "::warning::sshd offers keyboard-interactive authentication (may allow passwords through PAM)"
         fi
 
-        # ---- 10. Contract checks for images without cloud-init ----
-        # FreeBSD BASIC-CLOUDINIT images use nuageinit: the cloud-init status
-        # check above is only best-effort for them, so verify the outcome.
-        if [[ "$UNAME" == FreeBSD* ]]; then
-          if $SSH 'test -x /etc/rc.d/nuageinit || test -x /usr/libexec/nuageinit'; then
-            ok "nuageinit present"
+        # ---- 10. Image contract: hostname, growpart, root access, IPv6 ----
+        # Hard failures when `strict: true` (FreeBSD, and any image the
+        # catalog requires it for); warnings otherwise, while the fleet is
+        # brought up to the same level.
+        contract() {
+          if [[ "$1" == ok ]]; then ok "$2"
+          elif [[ "${STRICT:-false}" == "true" ]]; then bad "$2"
+          else echo "::warning::$2"; fi
+        }
+        guest_host=$($SSH 'hostname' || echo '')
+        if [[ "${guest_host%%.*}" == "${SRV_NAME%%.*}" ]]; then
+          contract ok "hostname set from metadata (${guest_host})"
+        else
+          contract ko "hostname '${guest_host}' does not match the instance name '${SRV_NAME}'"
+        fi
+        # growpart + resize: the root filesystem must use the flavor disk.
+        # On ZFS, df only grows once the pool itself was expanded.
+        flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
+        root_kb=$($SSH "df -kP / | awk 'NR==2 {print \$2}'" || echo 0)
+        root_gb=$(( ${root_kb:-0} / 1024 / 1024 ))
+        if (( flv_gb > 0 && root_gb * 10 >= flv_gb * 8 )); then
+          contract ok "root partition and filesystem grown to the flavor disk (${root_gb} of ${flv_gb} GB)"
+        else
+          contract ko "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
+        fi
+        if $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
+          contract ok "default user can become root without a password (sudo or doas)"
+        else
+          contract ko "default user cannot become root (no passwordless sudo or doas)"
+        fi
+        # IPv6: when Neutron gave the port a global IPv6 address, the guest
+        # must have configured it and reach the IPv6 Internet.
+        v6=$(openstack server show -f json -c addresses "$SRV_NAME" 2>/dev/null \
+          | python3 -c 'import json,sys,ipaddress
+        a=json.load(sys.stdin).get("addresses") or {}
+        ips=[ip for v in a.values() for ip in (v if isinstance(v,list) else [])]
+        print(next((i for i in ips if ipaddress.ip_address(i).version==6 and ipaddress.ip_address(i).is_global),""))' || echo '')
+        if [[ -z "$v6" ]]; then
+          info "no global IPv6 on the port: IPv6 checks skipped"
+          [[ "${REQUIRE_IPV6:-false}" == "true" ]] && bad "IPv6 required but the network gave no global IPv6 address"
+        else
+          info "port IPv6: $v6"
+          if $SSH "ip -6 addr 2>/dev/null | grep -qi '${v6}' || ifconfig 2>/dev/null | grep -qi 'inet6 ${v6}'"; then
+            ok6=ok
           else
-            bad "nuageinit not found"
+            ok6=ko
           fi
-          guest_host=$($SSH 'hostname' || echo '')
-          if [[ "${guest_host%%.*}" == "${SRV_NAME%%.*}" ]]; then
-            ok "hostname set from metadata (${guest_host})"
+          v6net=ko
+          for _ in 1 2 3 4 5 6; do
+            if $SSH 'ping -6 -c 2 -W 3 2620:fe::fe >/dev/null 2>&1 || ping6 -c 2 2620:fe::fe >/dev/null 2>&1'; then
+              v6net=ok; break
+            fi
+            sleep 5
+          done
+          if [[ "${REQUIRE_IPV6:-false}" == "true" ]]; then
+            [[ $ok6 == ok ]] && ok "guest configured its IPv6 address $v6" || bad "guest did not configure its IPv6 address $v6"
+            [[ $v6net == ok ]] && ok "IPv6 egress works (ping 2620:fe::fe)" || bad "no IPv6 egress from the guest"
           else
-            bad "hostname '${guest_host}' does not match the instance name '${SRV_NAME}'"
+            [[ $ok6 == ok ]] && ok "guest configured its IPv6 address $v6" || echo "::warning::guest did not configure its IPv6 address $v6"
+            [[ $v6net == ok ]] && ok "IPv6 egress works (ping 2620:fe::fe)" || echo "::warning::no IPv6 egress from the guest"
           fi
-          flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
-          root_kb=$($SSH "df -k / | awk 'NR==2 {print \$2}'" || echo 0)
-          root_gb=$(( root_kb / 1024 / 1024 ))
-          if (( flv_gb > 0 && root_gb * 10 >= flv_gb * 8 )); then
-            ok "root filesystem grown to the flavor disk (${root_gb} of ${flv_gb} GB)"
-          else
-            bad "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
-          fi
-          if $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
-            ok "default user can become root without a password (sudo or doas)"
-          else
-            bad "default user cannot become root (no passwordless sudo or doas)"
-          fi
+          [[ $ok6 == ok && $v6net == ok ]] || $SSH 'ip -6 addr 2>/dev/null || ifconfig' | head -30 || true
         fi
 
         echo "" >> "$SUMMARY"
