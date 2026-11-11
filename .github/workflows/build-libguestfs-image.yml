@@ -31,6 +31,10 @@ on:
         description: 'URL of the base image to download. The token {version} is substituted.'
         type: string
         required: true
+      upstream_checksum_url:
+        description: 'Optional checksum file listing the base image SHA-256 (GNU "hash  file" or BSD "SHA256 (file) = hash"). {version} is substituted. When set, a missing entry or a mismatch fails the build; when empty, <upstream_url>.sha256 is tried.'
+        type: string
+        default: ''
       decompress:
         description: 'Decompression to apply to the downloaded base: none|xz|gz|zst|bz2.'
         type: string
@@ -214,6 +218,7 @@ jobs:
           IN_VERSION: ${{ inputs.version }}
           IN_OUTPUT: ${{ inputs.output_filename }}
           IN_UPSTREAM: ${{ inputs.upstream_url }}
+          IN_UPSTREAM_SUM: ${{ inputs.upstream_checksum_url }}
         run: |
           set -euo pipefail
           version="$IN_VERSION"
@@ -227,10 +232,12 @@ jobs:
           fi
           output_filename="${IN_OUTPUT//\{version\}/$version}"
           upstream_url="${IN_UPSTREAM//\{version\}/$version}"
+          upstream_checksum_url="${IN_UPSTREAM_SUM//\{version\}/$version}"
           {
             echo "version=$version"
             echo "output_filename=$output_filename"
             echo "upstream_url=$upstream_url"
+            echo "upstream_checksum_url=$upstream_checksum_url"
           } >> "$GITHUB_OUTPUT"
           echo "Resolved: version=$version output=$output_filename"
 
@@ -266,11 +273,35 @@ jobs:
         shell: bash
         env:
           UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
+          UPSTREAM_SUM_URL: ${{ steps.vars.outputs.upstream_checksum_url }}
         run: |
           set -euo pipefail
           echo "Fetching $UPSTREAM_URL"
           curl -fL --retry 3 --retry-delay 5 -o build/work/base "$UPSTREAM_URL"
           ls -lh build/work/base
+          actual=$(sha256sum build/work/base | awk '{print $1}')
+          # Explicit checksum file (Rocky .CHECKSUM, Alma CHECKSUM...): the
+          # entry for this file is mandatory and must match.
+          if [[ -n "$UPSTREAM_SUM_URL" ]]; then
+            file="${UPSTREAM_URL##*/}"
+            curl -fL --silent --show-error --retry 3 --retry-delay 5 -o build/work/base.sums "$UPSTREAM_SUM_URL"
+            expected=$(awk -v f="$file" '
+              $1 == "SHA256" && $2 == "(" f ")" { print $4; exit }
+              $2 == f || $2 == "*" f { print $1; exit }' build/work/base.sums)
+            rm -f build/work/base.sums
+            if [[ -z "$expected" ]]; then
+              echo "::error::no SHA-256 entry for $file in $UPSTREAM_SUM_URL"
+              exit 1
+            fi
+            if [[ "$expected" != "$actual" ]]; then
+              echo "::error::Upstream SHA256 mismatch, possible MITM or corrupted download"
+              echo "::error::  expected: $expected"
+              echo "::error::  actual:   $actual"
+              exit 1
+            fi
+            echo "Upstream SHA256 verified against $UPSTREAM_SUM_URL: $actual"
+            exit 0
+          fi
 
           # Try to fetch a SHA256 checksum published alongside the upstream
           # artifact (most distributors publish `<url>.sha256` next to the
