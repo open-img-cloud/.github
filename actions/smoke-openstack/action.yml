@@ -192,7 +192,10 @@ runs:
         # the filename, plus the run attempt, so parallel jobs and re-runs
         # never share keypair / security group / server / image names.
         FILE_HASH="$(printf '%s' "$FILENAME" | sha256sum | cut -c1-8)"
-        TAG="oic-smoke-${OS_NAME}-${VERSION}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${FILE_HASH}"
+        # Keep it short: the server name becomes the guest hostname and the
+        # cloud appends its domain (".dc3-a.pub1.infomaniak.cloud"); over 64
+        # characters `hostname` fails and cloud-init logs an error.
+        TAG="oic-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${FILE_HASH}"
         # Sanitize: Nova rejects '.' (and friends) in keypair names. The
         # universal-safe charset across image/server/keypair/security
         # group on most clouds is [a-zA-Z0-9_-]. Replace anything else
@@ -411,8 +414,18 @@ runs:
         if echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
         elif echo "$ci" | grep -q "status: error"; then
-          bad "cloud-init in error state: see console log"
-          openstack console log show "$SRV_NAME" | tail -80 || true
+          bad "cloud-init in error state"
+          # The serial console is often empty on cloud images: read the
+          # cause over SSH instead (detailed status + warnings/errors).
+          echo "::group::cloud-init status --long"
+          echo "$ci"
+          echo "::endgroup::"
+          echo "::group::cloud-init warnings and errors"
+          $SSH 'sudo grep -E "WARNING|ERROR|failed" /var/log/cloud-init.log | tail -20' || true
+          echo "::endgroup::"
+          echo "::group::cloud-init tracebacks"
+          $SSH 'sudo grep -A25 "^Traceback" /var/log/cloud-init.log | tail -80' || true
+          echo "::endgroup::"
         else
           # Last resort: check that cloud-init at least wrote a final-message
           if $SSH 'sudo grep -q "Cloud-init.*finished" /var/log/cloud-init.log 2>/dev/null'; then
