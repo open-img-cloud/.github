@@ -35,6 +35,10 @@ on:
         description: 'Optional checksum file listing the base image SHA-256 or SHA-512 (GNU "hash  file" or BSD "SHA256 (file) = hash"; the algorithm follows the hash length, so Debian SHA512SUMS works). {version} and {version_suffix} are substituted. When set, a missing entry or a mismatch fails the build; when empty, <upstream_url>.sha256 is tried.'
         type: string
         default: ''
+      upstream_sha256:
+        description: 'Optional expected SHA-256 (64 hex) or SHA-512 (128 hex) of the base image, for upstreams that publish their checksums only on a web page (Oracle Linux templates): the caller extracts the hash in a prior job and passes it here. When set, it takes precedence over upstream_checksum_url and a mismatch fails the build.'
+        type: string
+        default: ''
       decompress:
         description: 'Decompression to apply to the downloaded base: none|xz|gz|zst|bz2.'
         type: string
@@ -279,12 +283,37 @@ jobs:
         env:
           UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
           UPSTREAM_SUM_URL: ${{ steps.vars.outputs.upstream_checksum_url }}
+          UPSTREAM_SHA256: ${{ inputs.upstream_sha256 }}
         run: |
           set -euo pipefail
           echo "Fetching $UPSTREAM_URL"
           curl -fL --retry 3 --retry-delay 5 -o build/work/base "$UPSTREAM_URL"
           ls -lh build/work/base
           actual=$(sha256sum build/work/base | awk '{print $1}')
+          # Expected hash passed by the caller (Oracle Linux: scraped from
+          # Oracle's templates page in a prior job). Mandatory match.
+          if [[ -n "$UPSTREAM_SHA256" ]]; then
+            expected=$(printf '%s' "$UPSTREAM_SHA256" | tr -d '[:space:]' | tr 'A-F' 'a-f')
+            algo=SHA256
+            case ${#expected} in
+              64) ;;
+              128) algo=SHA512; actual=$(sha512sum build/work/base | awk '{print $1}') ;;
+              *) echo "::error::upstream_sha256 must be 64 or 128 hex characters, got ${#expected}"; exit 1 ;;
+            esac
+            if [[ ! "$expected" =~ ^[0-9a-f]+$ ]]; then
+              echo "::error::upstream_sha256 is not a hex string"
+              exit 1
+            fi
+            if [[ "$expected" != "$actual" ]]; then
+              echo "::error::Upstream $algo mismatch, possible MITM or corrupted download"
+              echo "::error::  expected: $expected"
+              echo "::error::  actual:   $actual"
+              exit 1
+            fi
+            echo "Upstream $algo verified against upstream_sha256: $actual"
+            exit 0
+          fi
+
           # Explicit checksum file (Rocky .CHECKSUM, Alma CHECKSUM, Ubuntu
           # SHA256SUMS, Debian SHA512SUMS): the entry for this file is
           # mandatory and must match. SHA-256 or SHA-512 by hash length.
