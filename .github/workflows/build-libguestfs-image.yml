@@ -32,7 +32,7 @@ on:
         type: string
         required: true
       upstream_checksum_url:
-        description: 'Optional checksum file listing the base image SHA-256 or SHA-512 (GNU "hash  file" or BSD "SHA256 (file) = hash"; the algorithm follows the hash length, so Debian SHA512SUMS works). {version} and {version_suffix} are substituted. When set, a missing entry or a mismatch fails the build; when empty, <upstream_url>.sha256 is tried.'
+        description: 'Optional checksum file listing the base image SHA-256 or SHA-512 (GNU "hash  file", BSD "SHA256 (file) = hash", or a per-file checksum holding the hash alone like Alpine .sha512; the algorithm follows the hash length, so Debian SHA512SUMS works). {version} and {version_suffix} are substituted. When set, a missing entry or a mismatch fails the build; when empty, <upstream_url>.sha256 is tried.'
         type: string
         default: ''
       upstream_sha256:
@@ -323,6 +323,10 @@ jobs:
             expected=$(awk -v f="$file" '
               ($1 == "SHA256" || $1 == "SHA512") && $2 == "(" f ")" { print $4; exit }
               $2 == f || $2 == "*" f { print $1; exit }' build/work/base.sums)
+            # Per-file checksum holding the hash alone (Alpine .sha512).
+            if [[ -z "$expected" ]]; then
+              expected=$(awk 'NF { if (NF == 1 && $1 ~ /^[0-9a-fA-F]+$/ && (length($1) == 64 || length($1) == 128)) print tolower($1); exit }' build/work/base.sums)
+            fi
             rm -f build/work/base.sums
             if [[ -z "$expected" ]]; then
               echo "::error::no SHA-256/SHA-512 entry for $file in $UPSTREAM_SUM_URL"
