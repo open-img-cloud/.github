@@ -42,8 +42,13 @@ on:
         type: string
         default: '8192'
       runner_labels:
+        description: 'Runner for the release job (signing, publication, smoke) and, without build_runner, for the build VM.'
         type: string
         default: '["ubuntu-latest"]'
+      build_runner:
+        description: 'JSON runner labels of a native FreeBSD runner (e.g. ["self-hosted","freebsd"]). Empty: the build runs in an ephemeral FreeBSD VM on runner_labels. On a native runner the script runs through sudo and qemu-img must be installed (pkg install qemu-tools).'
+        type: string
+        default: ''
       bucket_name:
         description: 'Bucket name override (default: os_name; per-distro bucket model).'
         type: string
@@ -110,11 +115,12 @@ permissions:
 jobs:
   build:
     name: Build (FreeBSD) ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
-    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    runs-on: ${{ fromJSON(inputs.build_runner || inputs.runner_labels) }}
+    timeout-minutes: 150
     outputs:
       version: ${{ steps.vars.outputs.version }}
       output_filename: ${{ steps.vars.outputs.output_filename }}
-      sha256: ${{ steps.checksum.outputs.sha256 }}
+      vm_release: ${{ steps.vm.outputs.release }}
     steps:
       - name: Checkout caller repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -149,6 +155,116 @@ jobs:
             echo "output_filename=$output_filename"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare build directory
+        shell: bash
+        run: mkdir -p build/output
+
+      - name: Resolve build VM release
+        id: vm
+        shell: bash
+        env:
+          IN_RELEASE: ${{ inputs.vm_release }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          rel="${IN_RELEASE:-$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')}"
+          echo "release=$rel" >> "$GITHUB_OUTPUT"
+          echo "Build VM: FreeBSD $rel"
+
+      - name: Run caller build script in a FreeBSD VM
+        if: ${{ inputs.build_runner == '' }}
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b  # v1.6.0
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        with:
+          release: ${{ steps.vm.outputs.release }}
+          mem: ${{ inputs.vm_mem }}
+          envs: 'BUILD_SCRIPT VERSION'
+          usesh: true
+          copyback: true
+          run: |
+            set -eu
+            freebsd-version -ku
+            sh "$BUILD_SCRIPT" "$VERSION" "$(pwd)/build/output"
+            ls -l build/output
+
+      - name: Run caller build script on the FreeBSD runner
+        if: ${{ inputs.build_runner != '' }}
+        shell: sh
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -eu
+          freebsd-version -ku
+          sudo -E sh "$BUILD_SCRIPT" "$VERSION" "$(pwd)/build/output"
+          sudo chown -R "$(id -u)" build/output
+          ls -l build/output
+
+      - name: Convert to compressed qcow2
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          if ! command -v qemu-img >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils >/dev/null
+            else
+              echo "::error::qemu-img missing on the FreeBSD runner (pkg install qemu-tools)"; exit 1
+            fi
+          fi
+          qemu-img convert -f raw -O qcow2 -c build/output/image.raw "build/output/$OUTPUT_FILENAME"
+          rm -f build/output/image.raw
+          qemu-img info "build/output/$OUTPUT_FILENAME"
+
+      - name: Verify output exists
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          if [[ ! -f "$out" ]]; then
+            echo "::error::Expected output not produced: $out"
+            ls -la build/output/
+            exit 1
+          fi
+          ls -lh "$out"
+
+      - name: Hand the image to the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: freebsd-image-${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          path: build/output/${{ steps.vars.outputs.output_filename }}
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+  release:
+    name: Release ${{ inputs.os_name }} ${{ needs.build.outputs.version }}
+    needs: build
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Checkout shared actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          repository: open-img-cloud/.github
+          ref: ${{ inputs.shared_actions_ref }}
+          path: .oic-shared
+
+      - name: Fetch the built image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: freebsd-image-${{ inputs.os_name }}-${{ needs.build.outputs.version }}
+          path: build/output
+
       - name: Validate publish secrets (fail fast when publish=true)
         if: ${{ inputs.publish }}
         shell: bash
@@ -173,69 +289,11 @@ jobs:
           fi
           echo "All publish secrets present."
 
-      - name: Prepare build directory
-        shell: bash
-        run: mkdir -p build/output
-
-      - name: Resolve build VM release
-        id: vm
-        shell: bash
-        env:
-          IN_RELEASE: ${{ inputs.vm_release }}
-          VERSION: ${{ steps.vars.outputs.version }}
-        run: |
-          set -euo pipefail
-          rel="${IN_RELEASE:-$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')}"
-          echo "release=$rel" >> "$GITHUB_OUTPUT"
-          echo "Build VM: FreeBSD $rel"
-
-      - name: Run caller build script in a FreeBSD VM
-        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b  # v1.6.0
-        env:
-          BUILD_SCRIPT: ${{ inputs.build_script }}
-          VERSION: ${{ steps.vars.outputs.version }}
-        with:
-          release: ${{ steps.vm.outputs.release }}
-          mem: ${{ inputs.vm_mem }}
-          envs: 'BUILD_SCRIPT VERSION'
-          usesh: true
-          copyback: true
-          run: |
-            set -eu
-            freebsd-version -ku
-            sh "$BUILD_SCRIPT" "$VERSION" "$(pwd)/build/output"
-            ls -l build/output
-
-      - name: Convert to compressed qcow2
-        shell: bash
-        env:
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
-        run: |
-          set -euo pipefail
-          command -v qemu-img >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils >/dev/null; }
-          qemu-img convert -f raw -O qcow2 -c build/output/image.raw "build/output/$OUTPUT_FILENAME"
-          rm -f build/output/image.raw
-          qemu-img info "build/output/$OUTPUT_FILENAME"
-
-      - name: Verify output exists
-        shell: bash
-        env:
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
-        run: |
-          set -euo pipefail
-          out="build/output/$OUTPUT_FILENAME"
-          if [[ ! -f "$out" ]]; then
-            echo "::error::Expected output not produced: $out"
-            ls -la build/output/
-            exit 1
-          fi
-          ls -lh "$out"
-
       - name: Generate checksums
         id: checksum
         shell: bash
         env:
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          OUTPUT_FILENAME: ${{ needs.build.outputs.output_filename }}
           VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
@@ -259,7 +317,7 @@ jobs:
         if: ${{ inputs.sign }}
         shell: bash
         env:
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          OUTPUT_FILENAME: ${{ needs.build.outputs.output_filename }}
           COSIGN_YES: 'true'
         run: |
           set -euo pipefail
@@ -274,11 +332,11 @@ jobs:
         shell: bash
         env:
           OS_NAME: ${{ inputs.os_name }}
-          VERSION: ${{ steps.vars.outputs.version }}
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VERSION: ${{ needs.build.outputs.version }}
+          OUTPUT_FILENAME: ${{ needs.build.outputs.output_filename }}
           SHA256: ${{ steps.checksum.outputs.sha256 }}
           SIGNED: ${{ inputs.sign }}
-          BUILDER_IMAGE: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b (FreeBSD ${{ steps.vm.outputs.release }})
+          BUILDER_IMAGE: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b (FreeBSD ${{ needs.build.outputs.vm_release }})
           BUILDER_DIGEST: ''
           VARIANT: ${{ inputs.variant }}
         run: |
@@ -324,7 +382,7 @@ jobs:
         uses: ./.oic-shared/actions/publish-image
         with:
           os_name: ${{ inputs.os_name }}
-          version: ${{ steps.vars.outputs.version }}
+          version: ${{ needs.build.outputs.version }}
           artifacts_dir: build/output
           bucket_name: ${{ inputs.bucket_name }}
           also_latest: ${{ inputs.sync_latest }}
@@ -340,8 +398,8 @@ jobs:
           ORIGIN: ${{ inputs.cdn_origin }}
           BUCKET: ${{ inputs.bucket_name || inputs.os_name }}
           OS_NAME: ${{ inputs.os_name }}
-          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
-          VERSION: ${{ steps.vars.outputs.version }}
+          OUTPUT_FILENAME: ${{ needs.build.outputs.output_filename }}
+          VERSION: ${{ needs.build.outputs.version }}
           SYNC_LATEST: ${{ inputs.sync_latest }}
           VARIANT: ${{ inputs.variant }}
         run: |
@@ -409,8 +467,8 @@ jobs:
         uses: ./.oic-shared/actions/validate-image
         with:
           os_name: ${{ inputs.os_name }}
-          version: ${{ steps.vars.outputs.version }}
-          filename: ${{ steps.vars.outputs.output_filename }}
+          version: ${{ needs.build.outputs.version }}
+          filename: ${{ needs.build.outputs.output_filename }}
           cdn_hostname: ${{ inputs.cf_public_hostname }}
 
       - name: Runtime smoke on Infomaniak Public Cloud
@@ -418,8 +476,8 @@ jobs:
         uses: ./.oic-shared/actions/smoke-openstack
         with:
           os_name:                          ${{ inputs.os_name }}
-          version:                          ${{ steps.vars.outputs.version }}
-          filename:                         ${{ steps.vars.outputs.output_filename }}
+          version:                          ${{ needs.build.outputs.version }}
+          filename:                         ${{ needs.build.outputs.output_filename }}
           cdn_hostname:                     ${{ inputs.cf_public_hostname }}
           login_user:                       ${{ inputs.runtime_smoke_login_user }}
           strict:                           ${{ inputs.runtime_smoke_strict }}
@@ -433,7 +491,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: ${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          name: ${{ inputs.os_name }}-${{ needs.build.outputs.version }}
           path: build/output/
           retention-days: 7
           if-no-files-found: warn
