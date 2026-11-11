@@ -196,9 +196,10 @@ this document AND the cert-identity regex in section A.
   re-checks: MANIFEST keys, cosign verify-blob, sidecar files
   present, qcow2 size threshold, CDN cache headers. Failure marks
   the release as broken in the repo's status badge.
-- **Periodic catalog audit** (a scheduled cross-org workflow) runs
-  weekly and re-validates every active repo's `latest/` artifact
-  against the same checklist.
+- **Weekly catalog audit** (`.github/workflows/catalog-audit.yml`,
+  dispatched every Monday by the images-router cron) re-validates the
+  `latest/` artefact of every catalog entry and variant with the same
+  checks, and opens a single "Catalog audit" issue on failure.
 
 ## K. Runtime smoke on a live OpenStack (SHOULD)
 
