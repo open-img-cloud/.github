@@ -70,7 +70,7 @@ date and rationale.
 - The reusable libguestfs workflow auto-injects the org-wide drop-in
   `/etc/cloud/cloud.cfg.d/99_oic-policy.cfg` containing:
   ```yaml
-  datasource_list: ['OpenStack', 'ConfigDrive', 'NoCloud', 'None']
+  datasource_list: ['ConfigDrive', 'OpenStack', 'NoCloud', 'None']
   disable_root: true
   ssh_pwauth: false
   preserve_hostname: false
