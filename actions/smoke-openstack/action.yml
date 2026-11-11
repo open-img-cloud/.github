@@ -103,9 +103,17 @@ runs:
         if [[ ${#missing[@]} -gt 0 ]]; then
           echo "Installing missing tools: ${missing[*]}"
           if command -v apt-get >/dev/null; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              python3 python3-venv openssh-client curl ca-certificates >/dev/null
+            # Retried: the job container's resolver occasionally fails for
+            # a few seconds (gentoo-linux run 43027609631).
+            for attempt in 1 2 3 4 5; do
+              if apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                   --no-install-recommends python3 python3-venv openssh-client curl ca-certificates >/dev/null; then
+                break
+              fi
+              (( attempt == 5 )) && { echo "::error::apt-get failed 5 times"; exit 1; }
+              echo "apt-get failed (attempt $attempt), retrying in 15s"
+              sleep 15
+            done
           elif command -v dnf >/dev/null; then
             dnf install -y -q python3 openssh-clients curl ca-certificates
           elif command -v apk >/dev/null; then
@@ -450,6 +458,56 @@ runs:
         else
           bad "DNS resolution failed inside guest"
           $SSH 'cat /etc/resolv.conf' || true
+        fi
+
+        # ---- 9. SSH must not offer password authentication (all images) ----
+        # Asked from the runner: the methods the server offers to a client
+        # that refuses public keys. "password" is a hard failure (catalog
+        # standard: ssh_pwauth false); keyboard-interactive is reported, as
+        # with PAM it can also end up asking for a password.
+        # The refused login exits 255: keep it from tripping set -e/pipefail.
+        methods=$( { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ConnectTimeout=10 -o BatchMode=yes -o PubkeyAuthentication=no \
+          -o PreferredAuthentications=none "nobody@${IP}" true 2>&1 || true; } \
+          | sed -n 's/.*Permission denied (\(.*\)).*/\1/p' | tail -1 || true)
+        info "SSH auth methods offered: ${methods:-unknown}"
+        if [[ ",${methods}," == *",password,"* ]]; then
+          bad "sshd offers password authentication"
+        else
+          ok "sshd does not offer password authentication"
+        fi
+        if [[ ",${methods}," == *",keyboard-interactive,"* ]]; then
+          echo "::warning::sshd offers keyboard-interactive authentication (may allow passwords through PAM)"
+        fi
+
+        # ---- 10. Contract checks for images without cloud-init ----
+        # FreeBSD BASIC-CLOUDINIT images use nuageinit: the cloud-init status
+        # check above is only best-effort for them, so verify the outcome.
+        if [[ "$UNAME" == FreeBSD* ]]; then
+          if $SSH 'test -x /etc/rc.d/nuageinit || test -x /usr/libexec/nuageinit'; then
+            ok "nuageinit present"
+          else
+            bad "nuageinit not found"
+          fi
+          guest_host=$($SSH 'hostname' || echo '')
+          if [[ "${guest_host%%.*}" == "${SRV_NAME%%.*}" ]]; then
+            ok "hostname set from metadata (${guest_host})"
+          else
+            bad "hostname '${guest_host}' does not match the instance name '${SRV_NAME}'"
+          fi
+          flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
+          root_kb=$($SSH "df -k / | awk 'NR==2 {print \$2}'" || echo 0)
+          root_gb=$(( root_kb / 1024 / 1024 ))
+          if (( flv_gb > 0 && root_gb * 10 >= flv_gb * 8 )); then
+            ok "root filesystem grown to the flavor disk (${root_gb} of ${flv_gb} GB)"
+          else
+            bad "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
+          fi
+          if $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
+            ok "default user can become root without a password (sudo or doas)"
+          else
+            bad "default user cannot become root (no passwordless sudo or doas)"
+          fi
         fi
 
         echo "" >> "$SUMMARY"
