@@ -418,7 +418,10 @@ runs:
           echo "$ci"
           echo "::endgroup::"
           echo "::group::cloud-init warnings and errors"
-          $SSH 'sudo grep -E "WARNING|ERROR|Traceback|failed" /var/log/cloud-init.log | tail -40' || true
+          $SSH 'sudo grep -E "WARNING|ERROR|failed" /var/log/cloud-init.log | tail -20' || true
+          echo "::endgroup::"
+          echo "::group::cloud-init tracebacks"
+          $SSH 'sudo grep -A25 "^Traceback" /var/log/cloud-init.log | tail -80' || true
           echo "::endgroup::"
         else
           # Last resort: check that cloud-init at least wrote a final-message
