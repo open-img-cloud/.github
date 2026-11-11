@@ -413,11 +413,12 @@ runs:
 
         # ---- 6. Probe SSH (TCP-open + handshake) ----
         end=$((SECONDS + SSH_TIMEOUT))
+        last_ssh="port 22 never opened"
         while (( SECONDS < end )); do
           if timeout 5 bash -c "</dev/tcp/$IP/22" 2>/dev/null; then
-            if ssh -i "$WORK/id" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            if last_ssh=$(ssh -i "$WORK/id" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                    -o ConnectTimeout=5 -o BatchMode=yes \
-                   "${LOGIN_USER}@${IP}" true 2>/dev/null; then
+                   "${LOGIN_USER}@${IP}" true 2>&1); then
               ok "SSH reachable as $LOGIN_USER@$IP"
               break
             fi
@@ -426,6 +427,7 @@ runs:
         done
         if (( SECONDS >= end )); then
           bad "SSH never came up within ${SSH_TIMEOUT}s"
+          echo "Last SSH attempt: $(printf '%s' "$last_ssh" | grep -v '^Warning: Permanently added' | tail -3)"
           openstack console log show "$SRV_NAME" | tail -${CONSOLE_LINES:-100} || true
           exit 1
         fi
