@@ -120,7 +120,15 @@ date and rationale.
   - `<artifact>.sha256`
   - `<artifact>.bundle` (cosign sigstore-bundle)
 - **`MANIFEST.json`** at the version-prefix root, applies to all
-  artifacts in the same version directory.
+  artifacts in the same version directory (`MANIFEST-<variant>.json`
+  per variant). Besides the build provenance, `publish-image` adds the
+  machine fields used by importers (Glance, Proxmox, `index.json`):
+  `sha512`, `size`, `virtual_size` (from the qcow2 header), `firmware`
+  (`uefi` when the filename says so, else `bios`) and `arch`.
+- **`versions.json`** at the bucket root (schema `oic-versions/v1`):
+  every published version with its artifacts, rebuilt by
+  `publish-image` from the bucket contents on each release, served with
+  the mutable 5 min TTL. Clients use it to list, pin and roll back.
 - **`SHA256SUMS`** (multi-file) when a version directory ships >1
   artifact (variants / firmware / arch).
 
