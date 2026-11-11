@@ -298,7 +298,8 @@ runs:
         IMG_VSIZE=$(openstack image show -f value -c virtual_size "$IMG_NAME" 2>/dev/null || echo "")
         if [[ "$IMG_VSIZE" =~ ^[0-9]+$ ]]; then
           need_gb=$(( (IMG_VSIZE + 1073741823) / 1073741824 ))
-          read -r flv_disk flv_ram < <(openstack flavor show -f value -c disk -c ram "$FLAVOR" | tr '\n' ' ')
+          flv_disk=$(openstack flavor show -f value -c disk "$FLAVOR")
+          flv_ram=$(openstack flavor show -f value -c ram "$FLAVOR")
           if (( flv_disk < need_gb )); then
             bigger=$(openstack flavor list --public -f json --long | python3 -c '
         import json, sys
