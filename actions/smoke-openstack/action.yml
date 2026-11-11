@@ -457,10 +457,11 @@ runs:
         # that refuses public keys. "password" is a hard failure (catalog
         # standard: ssh_pwauth false); keyboard-interactive is reported, as
         # with PAM it can also end up asking for a password.
-        methods=$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        # The refused login exits 255: keep it from tripping set -e/pipefail.
+        methods=$( { ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
           -o ConnectTimeout=10 -o BatchMode=yes -o PubkeyAuthentication=no \
-          -o PreferredAuthentications=none "nobody@${IP}" true 2>&1 \
-          | sed -n 's/.*Permission denied (\(.*\)).*/\1/p' | tail -1)
+          -o PreferredAuthentications=none "nobody@${IP}" true 2>&1 || true; } \
+          | sed -n 's/.*Permission denied (\(.*\)).*/\1/p' | tail -1 || true)
         info "SSH auth methods offered: ${methods:-unknown}"
         if [[ ",${methods}," == *",password,"* ]]; then
           bad "sshd offers password authentication"
