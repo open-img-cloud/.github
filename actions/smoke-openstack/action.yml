@@ -568,6 +568,14 @@ runs:
           [[ $ok6 == ok && $v6net == ok ]] || $SSH 'ip -6 addr 2>/dev/null || ifconfig' | head -30 || true
         fi
 
+        # Diagnostic boots: show the console (where the user_data script
+        # writes) even when every check passed.
+        if [[ -n "${USER_DATA:-}" ]]; then
+          echo "::group::Instance console (diagnostic user_data)"
+          openstack console log show "$SRV_NAME" | tail -${CONSOLE_LINES:-400} || true
+          echo "::endgroup::"
+        fi
+
         echo "" >> "$SUMMARY"
         if [[ "$FAIL" -ne 0 ]]; then
           echo "**Result:** ❌ runtime smoke failed" >> "$SUMMARY"
