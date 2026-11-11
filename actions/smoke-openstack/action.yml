@@ -546,11 +546,15 @@ runs:
           [[ "${REQUIRE_IPV6:-false}" == "true" ]] && bad "IPv6 required but the network gave no global IPv6 address"
         else
           info "port IPv6: $v6"
-          if $SSH "ip -6 addr 2>/dev/null | grep -qi '${v6}' || ifconfig 2>/dev/null | grep -qi 'inet6 ${v6}'"; then
-            ok6=ok
-          else
-            ok6=ko
-          fi
+          # DHCPv6 can complete well after SSH is up (dhclient -6 on Amazon
+          # Linux 2): wait for the address like for the egress below.
+          ok6=ko
+          for _ in $(seq 1 12); do
+            if $SSH "ip -6 addr 2>/dev/null | grep -qi '${v6}' || ifconfig 2>/dev/null | grep -qi 'inet6 ${v6}'"; then
+              ok6=ok; break
+            fi
+            sleep 5
+          done
           v6net=ko
           for _ in 1 2 3 4 5 6; do
             if $SSH 'ping -6 -c 2 -W 3 2620:fe::fe >/dev/null 2>&1 || ping6 -c 2 2620:fe::fe >/dev/null 2>&1'; then
