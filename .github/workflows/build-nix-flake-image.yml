@@ -160,7 +160,10 @@ jobs:
       # with the kernel" in an unprivileged container). It also exposes
       # /dev/kvm, so that VM runs accelerated instead of under TCG.
       # `--user root`: Nix is installed single-user as root in the job.
-      options: --user root --privileged
+      # Public resolvers: the Docker embedded DNS of the job network failed
+      # to resolve archive.ubuntu.com for hours (2026-11-11, octavia and
+      # gentoo runs), breaking apt in the container.
+      options: --user root --privileged --dns 1.1.1.1 --dns 8.8.8.8
     outputs:
       version: ${{ steps.vars.outputs.version }}
       output_filename: ${{ steps.vars.outputs.output_filename }}

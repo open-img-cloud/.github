@@ -159,7 +159,10 @@ jobs:
       # mount/umount and fchmod /dev/* in the chroot.
       # No --device=/dev/kvm: DIB doesn't need nested KVM (it builds via
       # debootstrap + chroot, not by running a VM).
-      options: --privileged --user root
+      # Public resolvers: the Docker embedded DNS of the job network failed
+      # to resolve archive.ubuntu.com for hours (2026-11-11, octavia and
+      # gentoo runs), breaking apt in the container.
+      options: --privileged --user root --dns 1.1.1.1 --dns 8.8.8.8
     outputs:
       version: ${{ steps.vars.outputs.version }}
       output_filename: ${{ steps.vars.outputs.output_filename }}
