@@ -403,6 +403,7 @@ jobs:
               echo "${base}/SHA256SUMS"
             fi
             echo "https://${HOST}/${OS_NAME}/"
+            echo "https://${HOST}/${OS_NAME}/versions.json"
           } > /tmp/purge-public.txt
           # images-router caches its origin subrequests under the Infomaniak
           # URL, not the public one: purging only public URLs leaves the

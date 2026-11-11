@@ -106,6 +106,46 @@ runs:
         CFG
         echo "AWS_CONFIG_FILE=$cfg" >> "$GITHUB_ENV"
 
+    - name: Enrich MANIFEST with sha512, size, virtual_size, firmware, arch
+      # Additive fields for machine consumers (index.json, oic-sync, Glance
+      # os_hash_value which is sha512 by default, Proxmox disk sizing).
+      # Done here once instead of in the three build workflows; bash, jq
+      # and coreutils only, which every builder container has.
+      shell: bash
+      env:
+        ARTIFACTS_DIR: ${{ inputs.artifacts_dir }}
+      run: |
+        set -euo pipefail
+        cd "$ARTIFACTS_DIR"
+        shopt -s nullglob
+        for m in MANIFEST*.json; do
+          f=$(jq -r '.filename // empty' "$m")
+          if [[ -z "$f" || ! -f "$f" ]]; then
+            echo "::warning::$m: image file '$f' not found, not enriched"
+            continue
+          fi
+          sha512=$(sha512sum "$f" | cut -d' ' -f1)
+          size=$(stat -c %s "$f")
+          # qcow2 header: magic "QFI\xfb", virtual size = big-endian u64 at offset 24.
+          vsize=null
+          if [[ $(od -An -tx1 -N4 "$f" | tr -d ' \n') == "514649fb" ]]; then
+            vsize=0
+            for b in $(od -An -tu1 -j24 -N8 "$f"); do vsize=$(( vsize * 256 + b )); done
+          fi
+          # Same rule as the runtime smoke: "uefi" in the filename means the
+          # image needs UEFI firmware; otherwise it boots with the default
+          # (BIOS) firmware of OpenStack and Proxmox.
+          firmware=bios
+          [[ "$f" == *uefi* ]] && firmware=uefi
+          arch=x86_64
+          [[ "$f" == *aarch64* || "$f" == *arm64* ]] && arch=aarch64
+          jq --arg sha512 "$sha512" --argjson size "$size" --argjson vsize "$vsize" \
+             --arg firmware "$firmware" --arg arch "$arch" \
+             '. + {sha512: $sha512, size: $size, virtual_size: $vsize, firmware: $firmware, arch: $arch}' \
+             "$m" > "$m.tmp" && mv "$m.tmp" "$m"
+          echo "$m: size=$size virtual_size=$vsize firmware=$firmware arch=$arch"
+        done
+
     - name: Generate index.html for the version directory
       shell: bash
       env:
@@ -185,3 +225,51 @@ runs:
           --metadata-directive REPLACE \
           --endpoint-url "$S3_ENDPOINT" \
           "$SRC" "$DST"
+
+    - name: Rebuild versions.json at the bucket root
+      # Lists every published version with its MANIFEST(s), so clients can
+      # pin or roll back (the bucket root has no listing). Rebuilt from the
+      # bucket contents on every publish rather than appended to, so that
+      # variant jobs publishing concurrently converge on a complete file.
+      shell: bash
+      env:
+        BUCKET: ${{ steps.resolve.outputs.bucket }}
+        OS_NAME: ${{ inputs.os_name }}
+        S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.s3_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.s3_secret }}
+      run: |
+        set -euo pipefail
+        work=$(mktemp -d)
+        aws s3 cp --recursive --no-progress --only-show-errors \
+          --exclude '*' --include '*/MANIFEST*.json' --exclude 'latest/*' \
+          --endpoint-url "$S3_ENDPOINT" "s3://${BUCKET}/" "$work/m/"
+        shopt -s nullglob globstar
+        files=("$work"/m/*/MANIFEST*.json)
+        if [[ ${#files[@]} -eq 0 ]]; then
+          echo "::warning::no MANIFEST found in s3://${BUCKET}/, versions.json not written"
+          exit 0
+        fi
+        jq -s --arg name "$OS_NAME" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+          map(select(.version != null)) as $ms
+          | {
+              schema: "oic-versions/v1",
+              name: $name,
+              generated_at: $now,
+              versions: ($ms | group_by(.version)
+                | map({
+                    version: .[0].version,
+                    built_at: (map(.built_at) | max),
+                    artifacts: (sort_by(.variant // "") | map({
+                      variant, filename, sha256, sha512, size, virtual_size, firmware, arch,
+                      path: (.version + "/" + .filename),
+                      manifest: (.version + "/" + (if .variant then "MANIFEST-" + .variant + ".json" else "MANIFEST.json" end))
+                    }))
+                  })
+                | sort_by(.built_at) | reverse)
+            }' "${files[@]}" > "$work/versions.json"
+        jq -c '{name, versions: [.versions[] | .version]}' "$work/versions.json"
+        aws s3 cp --no-progress --only-show-errors \
+          --cache-control "public, max-age=300" --content-type application/json \
+          --endpoint-url "$S3_ENDPOINT" "$work/versions.json" "s3://${BUCKET}/versions.json"
+        rm -rf "$work"
