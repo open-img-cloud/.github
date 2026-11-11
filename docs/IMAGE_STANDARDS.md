@@ -19,7 +19,7 @@ date and rationale.
   alongside the artifact in the same bucket path.
 - **Certificate identity regex** points to the reusable workflow that
   produced the signature, not the caller repo. Currently:
-  `^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@`.
+  `^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake|freebsd)-image\.yml@`.
   When a new build engine is added, update this regex AND
   every consumer README.
 - **`MANIFEST.json`** alongside the artifact, with at minimum:
@@ -151,9 +151,10 @@ date and rationale.
     └── config/          # optional, for distro-specific drop-ins
 ```
 
-The release.yml MUST call one of the three approved reusables:
+The release.yml MUST call one of the four approved reusables:
 `build-libguestfs-image.yml`, `build-dib-image.yml`,
-`build-nix-flake-image.yml`. Adding a new reusable requires updating
+`build-nix-flake-image.yml`, `build-freebsd-image.yml` (FreeBSD-hosted
+builds in an ephemeral FreeBSD VM: FreeBSD, later OPNsense). Adding a new reusable requires updating
 this document AND the cert-identity regex in section A.
 
 ## G. Operations (SHOULD)

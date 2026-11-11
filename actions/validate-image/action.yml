@@ -29,7 +29,7 @@ inputs:
   cert_identity_regexp:
     description: 'Cosign cert-identity regex for verify-blob.'
     required: false
-    default: '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@'
+    default: '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake|freebsd)-image\.yml@'
   cert_oidc_issuer:
     description: 'Cosign OIDC issuer for verify-blob.'
     required: false

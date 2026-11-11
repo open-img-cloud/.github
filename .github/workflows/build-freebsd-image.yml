@@ -1,0 +1,439 @@
+name: Reusable build FreeBSD image
+
+# Reusable workflow for images built on a FreeBSD host (FreeBSD itself,
+# OPNsense later): mdconfig, gpart, ZFS/UFS and chroot need a FreeBSD
+# kernel, so the caller script runs as root inside an ephemeral FreeBSD VM
+# booted on the GitHub-hosted runner (KVM) by vmactions/freebsd-vm. The
+# script receives the version as $1 and the output dir as $2 and must
+# produce $2/image.raw; the runner converts it to a compressed qcow2.
+#
+# Signing, MANIFEST, publication, purge, validation and the OpenStack
+# runtime smoke are the same as in the other reusable workflows. The smoke
+# runs in strict mode with IPv6 required by default: these images carry
+# their own network and cloud-init setup, nothing is injected afterwards.
+
+on:
+  workflow_call:
+    inputs:
+      os_name:
+        description: 'OS / repo slug used as bucket prefix.'
+        type: string
+        required: true
+      version:
+        description: 'Version string. Defaults to github.ref_name.'
+        type: string
+        required: false
+        default: ''
+      output_filename:
+        description: 'Final qcow2 filename. The token {version} is substituted.'
+        type: string
+        required: true
+      build_script:
+        description: 'Path to the caller script, run as root in the FreeBSD VM as: sh <script> <version> <output-dir>; must produce <output-dir>/image.raw.'
+        type: string
+        required: false
+        default: 'build/build.sh'
+      vm_release:
+        description: 'FreeBSD release of the build VM (vmactions/freebsd-vm). Empty: the major.minor of the version.'
+        type: string
+        default: ''
+      vm_mem:
+        description: 'Build VM memory in MB.'
+        type: string
+        default: '8192'
+      runner_labels:
+        type: string
+        default: '["ubuntu-latest"]'
+      bucket_name:
+        description: 'Bucket name override (default: os_name; per-distro bucket model).'
+        type: string
+        default: ''
+      sign:
+        type: boolean
+        default: true
+      publish:
+        type: boolean
+        default: true
+      sync_latest:
+        type: boolean
+        default: true
+      cf_public_hostname:
+        type: string
+        default: 'images.openimages.cloud'
+      cdn_origin:
+        description: 'Origin the images-router Worker fetches from, as <endpoint>/<tenant>: (its cache key, needed for purges).'
+        type: string
+        default: 'https://s3.gva2.infomaniak.cloud/c0862b7f7b6849508bbcd74fb00e7fe2:'
+      shared_actions_ref:
+        type: string
+        default: 'main'
+      variant:
+        description: 'Optional variant identifier when the caller matrix produces multiple builds for the same version. When set, MANIFEST.json and SHA256SUMS get a -<variant> suffix. See build-libguestfs-image.yml for details.'
+        type: string
+        required: false
+        default: ''
+      runtime_smoke:
+        description: 'Run the post-publish runtime smoke (boot the just-published qcow2 on Infomaniak Public Cloud, SSH in, verify cloud-init). Requires the OS_* secrets and `publish: true` to actually exercise.'
+        type: boolean
+        default: true
+      runtime_smoke_login_user:
+        description: 'Default cloud-init login user used by the runtime smoke (e.g. freebsd).'
+        type: string
+        required: false
+        default: ''
+      runtime_smoke_strict:
+        description: 'Image contract checks (hostname, growpart, root access) fail the smoke.'
+        type: boolean
+        default: true
+      runtime_smoke_require_ipv6:
+        description: 'The guest must configure its IPv6 address and reach the IPv6 Internet.'
+        type: boolean
+        default: true
+
+    # See build-libguestfs-image.yml for rationale: all publish-related secrets
+    # are optional; runtime validation in the build job fails fast when
+    # publish=true and any are missing.
+    secrets:
+      OIC_S3_KEY_ID:      { required: false }
+      OIC_S3_SECRET:      { required: false }
+      CF_ZONE_ID:         { required: false }
+      CF_API_TOKEN:       { required: false }
+      OS_AUTH_URL:                       { required: false }
+      OS_REGION_NAME:                    { required: false }
+      OS_APPLICATION_CREDENTIAL_ID:      { required: false }
+      OS_APPLICATION_CREDENTIAL_SECRET:  { required: false }
+
+permissions:
+  contents: read
+  id-token: write   # cosign keyless via GitHub OIDC
+
+jobs:
+  build:
+    name: Build (FreeBSD) ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      output_filename: ${{ steps.vars.outputs.output_filename }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Checkout shared actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          repository: open-img-cloud/.github
+          ref: ${{ inputs.shared_actions_ref }}
+          path: .oic-shared
+
+      - name: Resolve build variables
+        id: vars
+        shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_OUTPUT: ${{ inputs.output_filename }}
+        run: |
+          set -euo pipefail
+          version="$IN_VERSION"
+          if [[ -z "$version" ]]; then
+            version="${GITHUB_REF_NAME:-}"
+            version="${version#v}"
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::Could not determine version."
+            exit 1
+          fi
+          output_filename="${IN_OUTPUT//\{version\}/$version}"
+          {
+            echo "version=$version"
+            echo "output_filename=$output_filename"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate publish secrets (fail fast when publish=true)
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          OIC_S3_KEY_ID: ${{ secrets.OIC_S3_KEY_ID }}
+          OIC_S3_SECRET: ${{ secrets.OIC_S3_SECRET }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -eo pipefail
+          missing=()
+          for var in OIC_S3_KEY_ID OIC_S3_SECRET \
+                     CF_ZONE_ID CF_API_TOKEN; do
+            if [[ -z "${!var:-}" ]]; then
+              missing+=("$var")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::publish=true but the following org secrets are missing or empty: ${missing[*]}"
+            echo "::error::configure them at https://github.com/organizations/${{ github.repository_owner }}/settings/secrets/actions or set publish=false for a dry-run"
+            exit 1
+          fi
+          echo "All publish secrets present."
+
+      - name: Prepare build directory
+        shell: bash
+        run: mkdir -p build/output
+
+      - name: Resolve build VM release
+        id: vm
+        shell: bash
+        env:
+          IN_RELEASE: ${{ inputs.vm_release }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -euo pipefail
+          rel="${IN_RELEASE:-$(echo "$VERSION" | grep -oE '^[0-9]+\.[0-9]+')}"
+          echo "release=$rel" >> "$GITHUB_OUTPUT"
+          echo "Build VM: FreeBSD $rel"
+
+      - name: Run caller build script in a FreeBSD VM
+        uses: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b  # v1.6.0
+        env:
+          BUILD_SCRIPT: ${{ inputs.build_script }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        with:
+          release: ${{ steps.vm.outputs.release }}
+          mem: ${{ inputs.vm_mem }}
+          envs: 'BUILD_SCRIPT VERSION'
+          usesh: true
+          copyback: true
+          run: |
+            set -eu
+            freebsd-version -ku
+            sh "$BUILD_SCRIPT" "$VERSION" "$(pwd)/build/output"
+            ls -l build/output
+
+      - name: Convert to compressed qcow2
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          command -v qemu-img >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq qemu-utils >/dev/null; }
+          qemu-img convert -f raw -O qcow2 -c build/output/image.raw "build/output/$OUTPUT_FILENAME"
+          rm -f build/output/image.raw
+          qemu-img info "build/output/$OUTPUT_FILENAME"
+
+      - name: Verify output exists
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+        run: |
+          set -euo pipefail
+          out="build/output/$OUTPUT_FILENAME"
+          if [[ ! -f "$out" ]]; then
+            echo "::error::Expected output not produced: $out"
+            ls -la build/output/
+            exit 1
+          fi
+          ls -lh "$out"
+
+      - name: Generate checksums
+        id: checksum
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          sha256sum "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha256"
+          sha1sum   "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.sha1"
+          md5sum    "$OUTPUT_FILENAME" > "${OUTPUT_FILENAME}.md5"
+          sums_filename="SHA256SUMS"
+          if [[ -n "${VARIANT:-}" ]]; then
+            sums_filename="SHA256SUMS-${VARIANT}"
+          fi
+          sha256sum "$OUTPUT_FILENAME" > "$sums_filename"
+          sha=$(cut -d' ' -f1 < "${OUTPUT_FILENAME}.sha256")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: ${{ inputs.sign }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2 (cosign 3.x: matches builder)
+
+      - name: Cosign sign-blob (keyless)
+        if: ${{ inputs.sign }}
+        shell: bash
+        env:
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cd build/output
+          # See build-libguestfs-image.yml for cosign 3.x bundle-only rationale.
+          cosign sign-blob "$OUTPUT_FILENAME" \
+            --bundle              "${OUTPUT_FILENAME}.bundle" \
+            --new-bundle-format=true \
+            --yes
+
+      - name: Generate MANIFEST.json
+        shell: bash
+        env:
+          OS_NAME: ${{ inputs.os_name }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+          SIGNED: ${{ inputs.sign }}
+          BUILDER_IMAGE: vmactions/freebsd-vm@811efaaac0668df8bfb8308c3ec997b5ab50037b (FreeBSD ${{ steps.vm.outputs.release }})
+          BUILDER_DIGEST: ''
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          cd build/output
+          manifest_filename="MANIFEST.json"
+          if [[ -n "${VARIANT:-}" ]]; then
+            manifest_filename="MANIFEST-${VARIANT}.json"
+          fi
+          jq -n \
+            --arg name             "$OS_NAME" \
+            --arg version          "$VERSION" \
+            --arg variant          "$VARIANT" \
+            --arg filename         "$OUTPUT_FILENAME" \
+            --arg sha256           "$SHA256" \
+            --arg built_at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit           "${GITHUB_SHA}" \
+            --arg run_url          "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg builder_image    "$BUILDER_IMAGE" \
+            --arg builder_digest   "$BUILDER_DIGEST" \
+            --argjson signed       "${SIGNED}" \
+            '{
+              name: $name,
+              version: $version,
+              variant: (if $variant == "" then null else $variant end),
+              format: "qcow2",
+              filename: $filename,
+              sha256: $sha256,
+              built_at: $built_at,
+              commit: $commit,
+              build_url: $run_url,
+              builder_tool: "freebsd-vm",
+              builder: {
+                image: $builder_image,
+                digest: $builder_digest
+              },
+              signed: $signed,
+              bundle: (if $signed then ($filename + ".bundle") else null end)
+            }' > "$manifest_filename"
+
+      - name: Publish to Infomaniak Object Storage
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/publish-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          artifacts_dir: build/output
+          bucket_name: ${{ inputs.bucket_name }}
+          also_latest: ${{ inputs.sync_latest }}
+          s3_key_id: ${{ secrets.OIC_S3_KEY_ID }}
+          s3_secret: ${{ secrets.OIC_S3_SECRET }}
+
+      - name: Compute Cloudflare purge URL list
+        id: purge-paths
+        if: ${{ inputs.publish }}
+        shell: bash
+        env:
+          HOST: ${{ inputs.cf_public_hostname }}
+          ORIGIN: ${{ inputs.cdn_origin }}
+          BUCKET: ${{ inputs.bucket_name || inputs.os_name }}
+          OS_NAME: ${{ inputs.os_name }}
+          OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          SYNC_LATEST: ${{ inputs.sync_latest }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          base="https://${HOST}/${OS_NAME}/latest"
+          vbase="https://${HOST}/${OS_NAME}/${VERSION}"
+          {
+            # Versioned paths are cached as immutable for a year; a republish
+            # of the same version (new MANIFEST fields, rebuilt qcow2) would
+            # otherwise serve the old image with the new checksums.
+            for f in "" index.html "${OUTPUT_FILENAME}" "${OUTPUT_FILENAME}.bundle" \
+                     "${OUTPUT_FILENAME}.sha256" "${OUTPUT_FILENAME}.sha1" "${OUTPUT_FILENAME}.md5"; do
+              echo "${vbase}/${f}"
+            done
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${vbase}/MANIFEST-${VARIANT}.json"
+              echo "${vbase}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${vbase}/MANIFEST.json"
+              echo "${vbase}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/versions.json"
+          } > /tmp/purge-versioned.txt
+          {
+            echo "${base}/"
+            echo "${base}/index.html"
+            echo "${base}/${OUTPUT_FILENAME}"
+            echo "${base}/${OUTPUT_FILENAME}.bundle"
+            echo "${base}/${OUTPUT_FILENAME}.sha256"
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${base}/MANIFEST-${VARIANT}.json"
+              echo "${base}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${base}/MANIFEST.json"
+              echo "${base}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/"
+            echo "https://${HOST}/${OS_NAME}/versions.json"
+          } > /tmp/purge-latest.txt
+          if [[ "$SYNC_LATEST" != "true" ]]; then : > /tmp/purge-latest.txt; fi
+          cat /tmp/purge-versioned.txt /tmp/purge-latest.txt > /tmp/purge-public.txt
+          # images-router caches its origin subrequests under the Infomaniak
+          # URL, not the public one: purging only public URLs leaves the
+          # Worker's cache untouched. Purge the origin twin of every URL
+          # (directory URLs map to their index.html object).
+          sed -E "s#^https://${HOST}/${OS_NAME}/#${ORIGIN}${BUCKET}/#; s#/\$#/index.html#" \
+            /tmp/purge-public.txt > /tmp/purge-origin.txt
+          cat /tmp/purge-public.txt /tmp/purge-origin.txt > /tmp/purge-paths.txt
+          {
+            echo 'paths<<PURGE_EOF'
+            cat /tmp/purge-paths.txt
+            echo 'PURGE_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Purge Cloudflare cache for latest/
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/cf-purge
+        with:
+          zone_id: ${{ secrets.CF_ZONE_ID }}
+          api_token: ${{ secrets.CF_API_TOKEN }}
+          paths: ${{ steps.purge-paths.outputs.paths }}
+
+      - name: Validate against IMAGE_STANDARDS.md
+        if: ${{ inputs.publish }}
+        uses: ./.oic-shared/actions/validate-image
+        with:
+          os_name: ${{ inputs.os_name }}
+          version: ${{ steps.vars.outputs.version }}
+          filename: ${{ steps.vars.outputs.output_filename }}
+          cdn_hostname: ${{ inputs.cf_public_hostname }}
+
+      - name: Runtime smoke on Infomaniak Public Cloud
+        if: ${{ inputs.publish && inputs.runtime_smoke && inputs.runtime_smoke_login_user != '' }}
+        uses: ./.oic-shared/actions/smoke-openstack
+        with:
+          os_name:                          ${{ inputs.os_name }}
+          version:                          ${{ steps.vars.outputs.version }}
+          filename:                         ${{ steps.vars.outputs.output_filename }}
+          cdn_hostname:                     ${{ inputs.cf_public_hostname }}
+          login_user:                       ${{ inputs.runtime_smoke_login_user }}
+          strict:                           ${{ inputs.runtime_smoke_strict }}
+          require_ipv6:                     ${{ inputs.runtime_smoke_require_ipv6 }}
+          os_auth_url:                      ${{ secrets.OS_AUTH_URL }}
+          os_region_name:                   ${{ secrets.OS_REGION_NAME }}
+          os_application_credential_id:     ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          os_application_credential_secret: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
+
+      - name: Upload artifacts (CI debugging)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ inputs.os_name }}-${{ steps.vars.outputs.version }}
+          path: build/output/
+          retention-days: 7
+          if-no-files-found: warn
