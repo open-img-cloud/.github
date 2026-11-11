@@ -37,16 +37,19 @@ runs:
           echo "No URLs to purge: skipping."
           exit 0
         fi
-        body=$(printf '%s\n' "${urls[@]}" | jq -R . | jq -sc '{files: .}')
         echo "Purging ${#urls[@]} URL(s):"
         printf '  %s\n' "${urls[@]}"
-        resp=$(curl -fsS -X POST \
-          -H "Authorization: Bearer $CF_TOKEN" \
-          -H "Content-Type: application/json" \
-          --data "$body" \
-          "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_cache")
-        echo "$resp" | jq .
-        if [[ "$(echo "$resp" | jq -r .success)" != "true" ]]; then
-          echo "::error::Cloudflare purge failed"
-          exit 1
-        fi
+        # Cloudflare accepts at most 30 URLs per purge request.
+        for (( i=0; i<${#urls[@]}; i+=30 )); do
+          body=$(printf '%s\n' "${urls[@]:i:30}" | jq -R . | jq -sc '{files: .}')
+          resp=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$body" \
+            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_cache")
+          echo "$resp" | jq -c '{success, errors}'
+          if [[ "$(echo "$resp" | jq -r .success)" != "true" ]]; then
+            echo "::error::Cloudflare purge failed"
+            exit 1
+          fi
+        done

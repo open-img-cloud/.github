@@ -377,7 +377,7 @@ jobs:
 
       - name: Compute Cloudflare purge URL list
         id: purge-paths
-        if: ${{ inputs.publish && inputs.sync_latest }}
+        if: ${{ inputs.publish }}
         shell: bash
         env:
           HOST: ${{ inputs.cf_public_hostname }}
@@ -385,10 +385,30 @@ jobs:
           BUCKET: ${{ inputs.bucket_name || inputs.os_name }}
           OS_NAME: ${{ inputs.os_name }}
           OUTPUT_FILENAME: ${{ steps.vars.outputs.output_filename }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          SYNC_LATEST: ${{ inputs.sync_latest }}
           VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
           base="https://${HOST}/${OS_NAME}/latest"
+          vbase="https://${HOST}/${OS_NAME}/${VERSION}"
+          {
+            # Versioned paths are cached as immutable for a year; a republish
+            # of the same version (new MANIFEST fields, rebuilt qcow2) would
+            # otherwise serve the old image with the new checksums.
+            for f in "" index.html "${OUTPUT_FILENAME}" "${OUTPUT_FILENAME}.bundle" \
+                     "${OUTPUT_FILENAME}.sha256" "${OUTPUT_FILENAME}.sha1" "${OUTPUT_FILENAME}.md5"; do
+              echo "${vbase}/${f}"
+            done
+            if [[ -n "${VARIANT:-}" ]]; then
+              echo "${vbase}/MANIFEST-${VARIANT}.json"
+              echo "${vbase}/SHA256SUMS-${VARIANT}"
+            else
+              echo "${vbase}/MANIFEST.json"
+              echo "${vbase}/SHA256SUMS"
+            fi
+            echo "https://${HOST}/${OS_NAME}/versions.json"
+          } > /tmp/purge-versioned.txt
           {
             echo "${base}/"
             echo "${base}/index.html"
@@ -404,7 +424,9 @@ jobs:
             fi
             echo "https://${HOST}/${OS_NAME}/"
             echo "https://${HOST}/${OS_NAME}/versions.json"
-          } > /tmp/purge-public.txt
+          } > /tmp/purge-latest.txt
+          if [[ "$SYNC_LATEST" != "true" ]]; then : > /tmp/purge-latest.txt; fi
+          cat /tmp/purge-versioned.txt /tmp/purge-latest.txt > /tmp/purge-public.txt
           # images-router caches its origin subrequests under the Infomaniak
           # URL, not the public one: purging only public URLs leaves the
           # Worker's cache untouched. Purge the origin twin of every URL
@@ -419,7 +441,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Purge Cloudflare cache for latest/
-        if: ${{ inputs.publish && inputs.sync_latest }}
+        if: ${{ inputs.publish }}
         uses: ./.oic-shared/actions/cf-purge
         with:
           zone_id: ${{ secrets.CF_ZONE_ID }}
