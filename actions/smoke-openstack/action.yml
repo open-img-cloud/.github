@@ -54,8 +54,12 @@ inputs:
     description: 'Pass-through of secrets.OS_AUTH_URL.'
     required: true
   os_region_name:
-    description: 'Pass-through of secrets.OS_REGION_NAME.'
+    description: 'Pass-through of secrets.OS_REGION_NAME (used when `regions` is empty).'
     required: true
+  regions:
+    description: 'Space-separated regions; one is picked at random per smoke run (empty: use os_region_name).'
+    required: false
+    default: 'dc3-a dc4-a'
   os_application_credential_id:
     description: 'Pass-through of secrets.OS_APPLICATION_CREDENTIAL_ID.'
     required: true
@@ -159,6 +163,7 @@ runs:
         EXTNET:                            ${{ inputs.external_network }}
         BOOT_TIMEOUT:                      ${{ inputs.boot_timeout }}
         SSH_TIMEOUT:                       ${{ inputs.ssh_timeout }}
+        REGIONS:                           ${{ inputs.regions }}
       run: |
         set -euo pipefail
         SUMMARY="$GITHUB_STEP_SUMMARY"
@@ -166,6 +171,17 @@ runs:
         bad() { echo "::error::❌ $1"; printf -- "- ❌ **%s**\n" "$1" >> "$SUMMARY"; FAIL=1; }
         info(){ echo "ℹ️  $1"; }
         FAIL=0
+
+        # Spread smokes over the available regions (same project and
+        # credential in each): catches region-specific breakage over time.
+        if [[ -n "${REGIONS// /}" ]]; then
+          read -ra region_list <<< "$REGIONS"
+          OS_REGION_NAME="${region_list[RANDOM % ${#region_list[@]}]}"
+          export OS_REGION_NAME
+        fi
+        echo "region=$OS_REGION_NAME" >> "$GITHUB_OUTPUT"
+        info "Region: $OS_REGION_NAME"
+        echo "Region: \`$OS_REGION_NAME\`" >> "$SUMMARY"
 
         # Per-run unique identifier. GITHUB_RUN_ID is monotonic across the
         # whole org so re-dispatches at the same commit never collide
@@ -282,10 +298,18 @@ runs:
         openstack security group rule create --proto icmp "$SG_NAME" >/dev/null
         ok "Keypair + security group created"
 
-        # ---- 3. Pick a tenant network (first non-external) ----
-        TENANT_NET=$(openstack network list --internal -f value -c Name | head -1)
+        # ---- 3. Pick a tenant network ----
+        # First non-external network that has an IPv4 subnet: the network
+        # order differs per region and some are IPv6-only (ext-v6only1 comes
+        # first in dc3-a), where the instance would get no IPv4 address.
+        TENANT_NET=""
+        while read -r net_id net_name; do
+          if [[ -n "$(openstack subnet list --network "$net_id" --ip-version 4 -f value -c ID 2>/dev/null)" ]]; then
+            TENANT_NET="$net_name"; break
+          fi
+        done < <(openstack network list --internal -f value -c ID -c Name)
         if [[ -z "$TENANT_NET" ]]; then
-          bad "No internal network found: create one in the smoke project"
+          bad "No internal network with an IPv4 subnet in $OS_REGION_NAME"
           exit 1
         fi
         info "Tenant network: $TENANT_NET"
@@ -432,7 +456,7 @@ runs:
       shell: bash
       env:
         OS_AUTH_URL:                       ${{ inputs.os_auth_url }}
-        OS_REGION_NAME:                    ${{ inputs.os_region_name }}
+        OS_REGION_NAME:                    ${{ steps.smoke.outputs.region || inputs.os_region_name }}
         OS_AUTH_TYPE:                      v3applicationcredential
         OS_APPLICATION_CREDENTIAL_ID:      ${{ inputs.os_application_credential_id }}
         OS_APPLICATION_CREDENTIAL_SECRET:  ${{ inputs.os_application_credential_secret }}
