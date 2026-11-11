@@ -103,9 +103,17 @@ runs:
         if [[ ${#missing[@]} -gt 0 ]]; then
           echo "Installing missing tools: ${missing[*]}"
           if command -v apt-get >/dev/null; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              python3 python3-venv openssh-client curl ca-certificates >/dev/null
+            # Retried: the job container's resolver occasionally fails for
+            # a few seconds (gentoo-linux run 43027609631).
+            for attempt in 1 2 3 4 5; do
+              if apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                   --no-install-recommends python3 python3-venv openssh-client curl ca-certificates >/dev/null; then
+                break
+              fi
+              (( attempt == 5 )) && { echo "::error::apt-get failed 5 times"; exit 1; }
+              echo "apt-get failed (attempt $attempt), retrying in 15s"
+              sleep 15
+            done
           elif command -v dnf >/dev/null; then
             dnf install -y -q python3 openssh-clients curl ca-certificates
           elif command -v apk >/dev/null; then
