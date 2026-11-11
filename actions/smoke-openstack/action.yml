@@ -48,6 +48,10 @@ inputs:
     description: 'Seconds to wait for SSH + cloud-init to be ready.'
     required: false
     default: '300'
+  user_data:
+    description: 'Optional cloud-init user-data passed to the instance (diagnostics). Empty by default.'
+    required: false
+    default: ''
 
   # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
   os_auth_url:
@@ -171,6 +175,8 @@ runs:
         EXTNET:                            ${{ inputs.external_network }}
         BOOT_TIMEOUT:                      ${{ inputs.boot_timeout }}
         SSH_TIMEOUT:                       ${{ inputs.ssh_timeout }}
+        USER_DATA:                         ${{ inputs.user_data }}
+        CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
         set -euo pipefail
@@ -352,7 +358,13 @@ runs:
           fi
         fi
         info "Boot $SRV_NAME (flavor=$FLAVOR)"
+        ud_args=()
+        if [[ -n "${USER_DATA:-}" ]]; then
+          printf '%s\n' "$USER_DATA" > "$WORK/user-data"
+          ud_args=(--user-data "$WORK/user-data")
+        fi
         openstack server create \
+          "${ud_args[@]}" \
           --image "$IMG_NAME" \
           --flavor "$FLAVOR" \
           --key-name "$KEY_NAME" \
@@ -404,7 +416,7 @@ runs:
         done
         if (( SECONDS >= end )); then
           bad "SSH never came up within ${SSH_TIMEOUT}s"
-          openstack console log show "$SRV_NAME" | tail -100 || true
+          openstack console log show "$SRV_NAME" | tail -${CONSOLE_LINES:-100} || true
           exit 1
         fi
 
