@@ -470,8 +470,10 @@ runs:
         # ---- 8. Network egress ----
         # Retry: right after cloud-init the guest resolver can still be
         # settling (observed as a one-off failure on an otherwise good image).
+        # Up to 60 s: on a first boot the resolver can arrive after SSH is
+        # up (dhcpcd writing resolv.conf on FreeBSD).
         dns_ok=0
-        for _ in 1 2 3 4 5 6; do
+        for _ in $(seq 1 12); do
           if $SSH 'getent hosts deb.debian.org >/dev/null 2>&1 || nslookup deb.debian.org >/dev/null 2>&1'; then
             dns_ok=1; break
           fi
