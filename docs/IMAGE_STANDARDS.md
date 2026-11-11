@@ -151,7 +151,7 @@ this document AND the cert-identity regex in section A.
 ## G. Operations (SHOULD)
 
 - **`watch.yml` cron** at a unique HH:MM minute per repo to spread
-  load on the runner pool. Current allocations: OL8 06:11, alpaquita 06:17,
+  load on the runner pool. Current allocations: rocky9 06:05, OL8 06:11, alma9 06:14, alpaquita 06:17,
   alpine 06:23, AL2023 06:29, AL2 06:35, OL9 06:41, OL10 06:47,
   gentoo 06:53, nixos 06:59. Pick a free `:NN` for new repos.
 - **`detect-upstream.sh`** prints the latest upstream version on
