@@ -47,7 +47,7 @@ inputs:
   ssh_timeout:
     description: 'Seconds to wait for SSH + cloud-init to be ready.'
     required: false
-    default: '300'
+    default: '420'
   user_data:
     description: 'Optional cloud-init user-data passed to the instance (diagnostics). Empty by default.'
     required: false
@@ -473,7 +473,7 @@ runs:
         # Up to 60 s: on a first boot the resolver can arrive after SSH is
         # up (dhcpcd writing resolv.conf on FreeBSD).
         dns_ok=0
-        for _ in $(seq 1 12); do
+        for _ in $(seq 1 24); do
           if $SSH 'getent hosts deb.debian.org >/dev/null 2>&1 || nslookup deb.debian.org >/dev/null 2>&1'; then
             dns_ok=1; break
           fi
@@ -551,16 +551,16 @@ runs:
           # DHCPv6 can complete well after SSH is up (dhclient -6 on Amazon
           # Linux 2): wait for the address like for the egress below.
           # /sbin is not in the default user's PATH everywhere (ip on Amazon
-          # Linux 2); slow DHCP in some regions: wait up to 2 minutes.
+          # Linux 2); slow DHCP in some regions (over 2 minutes in Infomaniak dc4-a): wait up to 4 minutes.
           ok6=ko
-          for _ in $(seq 1 24); do
+          for _ in $(seq 1 48); do
             if $SSH "PATH=\$PATH:/sbin:/usr/sbin; ip -6 addr 2>/dev/null | grep -qi '${v6}' || ifconfig 2>/dev/null | grep -qi 'inet6 ${v6}'"; then
               ok6=ok; break
             fi
             sleep 5
           done
           v6net=ko
-          for _ in $(seq 1 12); do
+          for _ in $(seq 1 24); do
             if $SSH 'ping -6 -c 2 -W 3 2620:fe::fe >/dev/null 2>&1 || ping6 -c 2 2620:fe::fe >/dev/null 2>&1'; then
               v6net=ok; break
             fi
