@@ -66,8 +66,9 @@ Versions below are read live from each image's published manifest.
 | Component | Releases | Status | Repository |
 |---|---|---|---|
 | [Octavia Amphora](https://openimages.cloud/images/octavia-amphora/) | `2026.1`, `2025.2`, `2025.1` | ✅ Stable | [`octavia-amphora`](https://github.com/open-img-cloud/octavia-amphora) |
+| [Manila Service Image](https://openimages.cloud/images/manila-service-image/) | `2026.2` | ✅ Stable | [`manila-service-image`](https://github.com/open-img-cloud/manila-service-image) |
 
-> Amphora images follow the OpenStack release series. Older series stay at their immutable paths, so you can keep matching the release of your deployment.
+> Amphora and Manila service images follow the OpenStack release series. Older series stay at their immutable paths, so you can keep matching the release of your deployment.
 
 ### In preparation
 
@@ -103,7 +104,7 @@ Everything runs from this repository: **reusable workflows** and **composite act
 | Engine | Used for | Hook |
 |---|---|---|
 | libguestfs | Customising official upstream cloud images | `build/customize.sh` |
-| diskimage-builder | Images assembled from scratch (Octavia, Gentoo) | `build/dib-build.sh` |
+| diskimage-builder | Images assembled from scratch (Octavia, Manila, Gentoo) | `build/dib-build.sh` |
 | Nix flake | NixOS, through the native NixOS image framework | `build/nix-build.sh` |
 
 A daily watcher opens a pull request when upstream ships a new version. A tag on the merged version builds, boot-tests, signs and publishes the image. Builds run on GitHub-hosted runners with KVM.
