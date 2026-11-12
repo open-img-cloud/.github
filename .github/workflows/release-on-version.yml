@@ -1,0 +1,78 @@
+# Reusable: publish a release when VERSION changes on main.
+#
+# Merging an upstream bump PR (or any commit that changes VERSION) is enough:
+# this creates the tag v<VERSION> and starts the caller's release.yml on that
+# tag, exactly as a maintainer pushing the tag by hand. A tag pushed with
+# GITHUB_TOKEN does not trigger workflows, hence the explicit dispatch
+# (workflow_dispatch is allowed from GITHUB_TOKEN).
+#
+# Caller (.github/workflows/auto-release.yml in each image repo):
+#
+#   name: Release on VERSION change
+#   on:
+#     push:
+#       branches: [main]
+#       paths: [VERSION]
+#     workflow_dispatch:
+#   permissions:
+#     contents: write
+#     actions: write
+#   jobs:
+#     release:
+#       uses: open-img-cloud/.github/.github/workflows/release-on-version.yml@main
+#
+# If the tag already exists (released by hand, or a revert), nothing happens.
+
+name: Release on VERSION change
+
+on:
+  workflow_call:
+    inputs:
+      release_workflow:
+        description: 'Workflow file to start on the new tag.'
+        type: string
+        default: release.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Tag v<VERSION> and start the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_WORKFLOW: ${{ inputs.release_workflow }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          if [[ -z "$version" || ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "::error::VERSION is empty or not a valid tag suffix: '$version'"
+            exit 1
+          fi
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null \
+             || git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::notice::$tag already exists: nothing to release"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $version" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
+          # publish=true: a dispatched release.yml only publishes when asked to.
+          gh workflow run "$RELEASE_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref "$tag" -f publish=true
+          echo "::notice::Tagged $tag on ${GITHUB_SHA::7} and started $RELEASE_WORKFLOW"
+          {
+            echo "### Release started"
+            echo "- Tag: \`$tag\` on \`${GITHUB_SHA::7}\`"
+            echo "- Workflow: \`$RELEASE_WORKFLOW\` ([runs](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/${RELEASE_WORKFLOW}))"
+          } >> "$GITHUB_STEP_SUMMARY"
