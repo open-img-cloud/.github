@@ -105,7 +105,7 @@ jobs:
 
       - name: Open or update bump PR
         if: steps.compare.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1  # v8.1.3 (Node 24)
         with:
           branch: ${{ inputs.pr_branch }}
           delete-branch: true
@@ -119,7 +119,7 @@ jobs:
             - Detected by: `${{ inputs.detect_script }}`
             - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            After merging, push the tag `v${{ steps.detect.outputs.latest }}` on main to build and publish the release (merging alone does not start it).
+            Merging this PR publishes the release: `auto-release.yml` tags `v${{ steps.detect.outputs.latest }}` and starts the build, signature, runtime contract and catalog update. Repos without `auto-release.yml`: push that tag on main by hand.
           assignees: ${{ inputs.pr_assignees }}
           labels: |
             automated
