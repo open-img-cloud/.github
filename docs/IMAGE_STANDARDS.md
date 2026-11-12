@@ -241,6 +241,8 @@ cloud image. The post-publish runtime smoke closes that loop.
   - root partition and filesystem (or ZFS pool) grown to the flavor
     disk (at least 80%);
   - passwordless root for the default user (sudo or doas);
+  - qemu-guest-agent running (the image is registered with
+    `hw_qemu_guest_agent=yes`; the catalog advertises quiesced snapshots);
   - the global IPv6 address Neutron assigned to the port is configured,
     and the guest reaches the IPv6 Internet.
 - Timeouts absorb slow DHCP (over 2 minutes measured in `dc4-a`): SSH 7
