@@ -539,6 +539,22 @@ runs:
         else
           contract ko "default user cannot become root (no passwordless sudo or doas)"
         fi
+        # Guest agent: the image is registered with hw_qemu_guest_agent=yes, so Nova
+        # adds the virtio-serial channel and the agent must be running (the catalog
+        # advertises quiesced snapshots, which need it). Retried: it may start late.
+        # BusyBox pgrep -x does not match qemu-ga (Alpine): pidof as fallback; FreeBSD
+        # has no pidof but a working pgrep -x.
+        qga=""
+        for _ in 1 2 3 4 5 6; do
+          qga=$($SSH 'if pgrep -x qemu-ga >/dev/null 2>&1 || pidof qemu-ga >/dev/null 2>&1; then echo running; elif command -v qemu-ga >/dev/null 2>&1 || [ -x /usr/bin/qemu-ga ] || [ -x /usr/sbin/qemu-ga ] || [ -x /usr/local/bin/qemu-ga ]; then echo installed; else echo missing; fi' 2>/dev/null | tail -1)
+          [ "$qga" = running ] && break
+          sleep 10
+        done
+        case "$qga" in
+          running) contract ok "qemu-guest-agent running (guest agent channel up)" ;;
+          installed) contract ko "qemu-guest-agent installed but not running" ;;
+          *) contract ko "qemu-guest-agent missing (catalog advertises hw_qemu_guest_agent and quiesced snapshots)" ;;
+        esac
         # IPv6: when Neutron gave the port a global IPv6 address, the guest
         # must have configured it and reach the IPv6 Internet.
         v6=$(openstack server show -f json -c addresses "$SRV_NAME" 2>/dev/null \
