@@ -5,6 +5,7 @@
 - 🌐 **Website and catalog**: <https://openimages.cloud>
 - 📦 **Image registry**: <https://images.openimages.cloud> (Swiss-hosted Infomaniak Object Storage behind the Cloudflare CDN)
 - 🔐 **Verification guide**: <https://openimages.cloud/verify/>
+- 📖 **Documentation**: <https://github.com/open-img-cloud/docs> (getting started, image contract, catalog index, oic-sync, architecture)
 - 📜 **Conventions and image standards**: [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md), [`IMAGE_STANDARDS.md`](https://github.com/open-img-cloud/.github/blob/main/docs/IMAGE_STANDARDS.md)
 
 ---
