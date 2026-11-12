@@ -80,7 +80,7 @@ curl -fLO https://images.openimages.cloud/alpine-linux/3.24.1/alpine-3.24.1-uefi
 
 cosign verify-blob alpine-3.24.1-uefi-x86_64.qcow2 \
   --bundle alpine-3.24.1-uefi-x86_64.qcow2.bundle --new-bundle-format \
-  --certificate-identity-regexp '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake)-image\.yml@' \
+  --certificate-identity-regexp '^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake|freebsd)-image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
