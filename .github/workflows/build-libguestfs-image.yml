@@ -998,6 +998,21 @@ jobs:
           os_application_credential_id:     ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
           os_application_credential_secret: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
 
+      - name: Request a catalog rebuild (index.json follows the release)
+        # images-router dispatches the oic-website deploy, authenticated by this job's
+        # GitHub OIDC token. Best effort: the daily site build remains the fallback.
+        if: ${{ !cancelled() && inputs.publish }}
+        continue-on-error: true
+        shell: bash
+        env:
+          HOOK_URL: https://images.openimages.cloud/_hooks/catalog
+        run: |
+          set -euo pipefail
+          tok=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$HOOK_URL" | jq -r .value)
+          curl -fsS --retry 3 -X POST -H "Authorization: Bearer $tok" "$HOOK_URL"
+          echo
+
       - name: Upload artifacts (CI debugging, 7-day retention)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
