@@ -212,37 +212,44 @@ this document AND the cert-identity regex in section A.
   `latest/` artefact of every catalog entry and variant with the same
   checks, and opens a single "Catalog audit" issue on failure.
 
-## K. Runtime smoke on a live OpenStack (SHOULD)
+## K. Runtime smoke on a live OpenStack (MUST)
 
 Static artefact validation (section J) confirms an image is well-formed
-and signed; it does not prove that it actually boots, that cloud-init
-applies the catalog policy, or that DNS works inside the guest. The
-post-publish runtime smoke closes that loop.
+and signed; it does not prove that it actually boots or behaves like a
+cloud image. The post-publish runtime smoke closes that loop.
 
 - The reusable workflow's `runtime_smoke` step (composite action
-  [`actions/smoke-openstack/`][2]) imports the just-published qcow2
-  into a real OpenStack via Glance `web-download`, boots a throwaway
-  instance, allocates a floating IP, SSHes in as the distro's default
-  cloud-init user, and runs a short health probe (cloud-init status,
-  DNS resolution). Resources are tagged uniformly and torn down on
-  exit, even on failure.
-- **Default platform: Infomaniak Public Cloud.** A dedicated
-  `oic-smoke` project hosts the throwaway resources. Auth uses an
-  application credential (no passwords in CI).
-- Required org-wide secrets (configured once on the GitHub org, scoped
-  to `open-img-cloud/*`):
-  - `OS_AUTH_URL`
-  - `OS_REGION_NAME`
-  - `OS_APPLICATION_CREDENTIAL_ID`
-  - `OS_APPLICATION_CREDENTIAL_SECRET`
-- Each caller workflow MUST set `runtime_smoke_login_user` to the
-  distro's default cloud-init user (`alpine`, `alpaquita`, `ec2-user`,
-  `cloud-user`, `nixos`, `debian`, …) so SSH authentication uses the
-  correct identity.
-- `runtime_smoke` defaults to `true` but no-ops when
-  `runtime_smoke_login_user` is empty, so existing callers don't break
-  before they're updated.
-- Failure blocks the release run (red status badge); cleanup still runs
-  via `if: always()`.
+  [`actions/smoke-openstack/`][2]) imports the just-published qcow2 into
+  Infomaniak Public Cloud (one of `dc3-a`, `dc4-a` at random; `regions`
+  input), boots a throwaway instance on `ext-net1` (public IPv4 and
+  IPv6, floating IP only when needed), SSHes in as the distro's default
+  user with an injected key, and checks the **image contract**. Every
+  check is required (inputs `strict` and `require_ipv6` default to
+  true):
+  - SSH with the injected key as the documented default user;
+  - cloud-init finished without error (status, warnings and tracebacks
+    printed on failure);
+  - DNS resolution inside the guest;
+  - sshd does not offer password authentication (keyboard-interactive
+    is reported);
+  - hostname taken from the metadata;
+  - root partition and filesystem (or ZFS pool) grown to the flavor
+    disk (at least 80%);
+  - passwordless root for the default user (sudo or doas);
+  - the global IPv6 address Neutron assigned to the port is configured,
+    and the guest reaches the IPv6 Internet.
+- Timeouts absorb slow DHCP (over 2 minutes measured in `dc4-a`): SSH 7
+  minutes, IPv6 address 4 minutes, DNS and IPv6 egress 2 minutes.
+- Images with a non-POSIX login shell must set a POSIX shell for the
+  default user (FreeBSD: `/bin/sh`); contract commands get `/sbin` and
+  `/usr/sbin` in `PATH`.
+- `user_data` (diagnostic boots) passes a cloud-config to the instance
+  and prints its console at the end.
+- Required org-wide secrets: `OS_AUTH_URL`, `OS_REGION_NAME`,
+  `OS_APPLICATION_CREDENTIAL_ID`, `OS_APPLICATION_CREDENTIAL_SECRET`.
+- Each caller workflow MUST set `runtime_smoke_login_user`. Images that
+  are not general-purpose VMs (Octavia amphora, Manila service image)
+  leave it empty and document a dedicated test.
+- Failure blocks the release run; cleanup always runs.
 
 [2]: ../actions/smoke-openstack/
