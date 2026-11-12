@@ -61,8 +61,10 @@ date and rationale.
     with `Cache-Control: public, max-age=31536000, immutable`.
   - Latest alias: `https://images.openimages.cloud/<slug>/latest/<filename>`,
     with `Cache-Control: public, max-age=300`.
-- **Index HTML** auto-generated at the bucket prefix (`/index.html`)
-  showing all files, sizes, and verification snippet.
+- **Index HTML** auto-generated in each version directory and in
+  `latest/` (`index.html`), showing all files, sizes, and verification
+  snippet. The bucket root (`/<slug>/`) has no index: the router
+  redirects it to `/<slug>/latest/`; `versions.json` lists the versions.
 
 ## C. Image content for cloud-init-based distros (MUST)
 
@@ -98,8 +100,11 @@ date and rationale.
 
 ## D. Image content for non-cloud-init distros (MUST when applicable)
 
-- NixOS / FreeBSD don't ship cloud-init. They MUST provide an
-  equivalent metadata fetcher that:
+- Every catalog image ships cloud-init today, NixOS (nixpkgs
+  `services.cloud-init`) and FreeBSD (`net/cloud-init`) included, with the
+  catalog datasource order (ConfigDrive first). This section applies to a
+  future image that cannot run cloud-init: it MUST provide an equivalent
+  metadata fetcher that:
   1. Reads OpenStack metadata from `169.254.169.254` (HTTP) AND/OR a
      ConfigDrive (`vfat label config-2`).
   2. Sets the hostname.
