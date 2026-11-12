@@ -52,6 +52,14 @@ Versions below are read live from each image's published manifest.
 
 <sup>1</sup> Amazon Linux 2 reached end of life upstream on 2025-06-30. Builds continue for existing workloads; new deployments should target Amazon Linux 2023.
 
+### BSD
+
+| Image | Latest | Variants | Login user | Status | Repository |
+|---|---|---|---|---|---|
+| [FreeBSD 14](https://openimages.cloud/images/freebsd-14/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ffreebsd-14%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `freebsd` | ✅ Stable<sup>2</sup> | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
+
+<sup>2</sup> 14.5 is the last FreeBSD 14 release; the 14 branch is supported until 2028-11-30. FreeBSD 15 images are in preparation.
+
 ### OpenStack components
 
 | Component | Releases | Status | Repository |
@@ -66,7 +74,7 @@ Versions below are read live from each image's published manifest.
 |---|---|---|
 | Windows Server 2022 | Windows guests with cloudbase-init | [`windows-server-2022`](https://github.com/open-img-cloud/windows-server-2022) |
 | Cloud Rescue | Bootable rescue and diagnostic image | [`cloud-rescue`](https://github.com/open-img-cloud/cloud-rescue) |
-| FreeBSD | FreeBSD guests for OpenStack | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
+| FreeBSD 15 | FreeBSD 15 guests, same build as FreeBSD 14 | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
 
 > Need another distribution? [Open an issue](https://github.com/open-img-cloud/.github/issues): new images are added on demand.
 
