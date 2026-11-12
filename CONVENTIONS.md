@@ -20,7 +20,8 @@ input (e.g. `'["self-hosted","Linux","kvm"]'`); see
 [`docs/runners.md`](docs/runners.md) for provisioning those.
 
 Builds execute inside the **stackopshq builder image**
-(`ghcr.io/stackopshq/libguestfs-tools:2`), pinned to a major version. Before
+(`ghcr.io/stackopshq/libguestfs-tools`), pinned to an exact release and digest
+(currently `2.1.1`, set in `build-libguestfs-image.yml`). Before
 the build job starts, a `verify-builder` job runs `cosign verify` against the
 image's keyless signature; the build is aborted if verification fails.
 
