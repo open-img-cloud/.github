@@ -515,7 +515,10 @@ runs:
           elif [[ "${STRICT:-false}" == "true" ]]; then bad "$2"
           else echo "::warning::$2"; fi
         }
-        guest_host=$($SSH 'hostname' || echo '')
+        # A contract check must not fail on one dropped SSH connection
+        # (seen in dc4-a): retry each probe a few times before concluding.
+        probe() { local out; for _ in 1 2 3; do out=$($SSH "$1" 2>/dev/null) && [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 5; done; printf '%s' "$out"; }
+        guest_host=$(probe 'hostname')
         if [[ "${guest_host%%.*}" == "${SRV_NAME%%.*}" ]]; then
           contract ok "hostname set from metadata (${guest_host})"
         else
@@ -524,7 +527,7 @@ runs:
         # growpart + resize: the root filesystem must use the flavor disk.
         # On ZFS, df only grows once the pool itself was expanded.
         flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
-        root_kb=$($SSH "df -kP / | awk 'NR==2 {print \$2}'" || echo 0)
+        root_kb=$(probe "df -kP / | awk 'NR==2 {print \$2}'")
         root_gb=$(( ${root_kb:-0} / 1024 / 1024 ))
         if (( flv_gb > 0 && root_gb * 10 >= flv_gb * 8 )); then
           contract ok "root partition and filesystem grown to the flavor disk (${root_gb} of ${flv_gb} GB)"
