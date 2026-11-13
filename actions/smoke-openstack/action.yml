@@ -543,7 +543,8 @@ runs:
         # A contract check must not fail on one dropped SSH connection
         # (seen in dc4-a): retry each probe a few times before concluding.
         probe() { local out; for _ in 1 2 3; do out=$($SSH "$1" 2>/dev/null) && [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 5; done; printf '%s' "$out"; }
-        guest_host=$(probe 'hostname')
+        # uname -n, not hostname: Arch ships no hostname binary (inetutils).
+        guest_host=$(probe 'uname -n')
         if [[ "${guest_host%%.*}" == "${SRV_NAME%%.*}" ]]; then
           contract ok "hostname set from metadata (${guest_host})"
         else
