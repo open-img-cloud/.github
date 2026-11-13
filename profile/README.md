@@ -76,6 +76,14 @@ Versions below are read live from each image's published manifest.
 
 > Amphora, Manila and Trove images follow the OpenStack release series. Older series stay at their immutable paths, so you can keep matching the release of your deployment.
 
+### Test image
+
+| Image | Latest | Login user | Status | Repository |
+|---|---|---|---|---|
+| [CirrOS](https://openimages.cloud/images/cirros/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Fcirros%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | `cirros` | 🧪 Test only | [`cirros`](https://github.com/open-img-cloud/cirros) |
+
+> CirrOS is republished byte for byte from upstream (checksum-verified, signed, boot-tested) for testing a cloud with Tempest or smoke checks. It has a well-known password: never use it for workloads.
+
 ### In preparation
 
 | Image | Purpose | Repository |
