@@ -60,6 +60,17 @@ inputs:
     description: 'When true (default), the guest must configure the global IPv6 address of its port and reach the IPv6 Internet (fails otherwise, also when the network has no IPv6); false only reports it.'
     required: false
     default: 'true'
+  contract:
+    description: |
+      "full" (default): the catalog contract of IMAGE_STANDARDS section K.
+      "minimal": test images without cloud-init nor guest agent (CirrOS).
+      The image is registered without hw_qemu_guest_agent, the cloud-init
+      and qemu-guest-agent checks are skipped and an sshd offering
+      passwords is only reported (CirrOS ships a well-known password by
+      design). SSH with the injected key, DNS, hostname, root growth,
+      sudo and IPv6 keep their usual rules.
+    required: false
+    default: 'full'
 
   # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
   os_auth_url:
@@ -186,6 +197,7 @@ runs:
         USER_DATA:                         ${{ inputs.user_data }}
         STRICT:                            ${{ inputs.strict }}
         REQUIRE_IPV6:                      ${{ inputs.require_ipv6 }}
+        CONTRACT:                          ${{ inputs.contract }}
         CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
@@ -195,6 +207,14 @@ runs:
         bad() { echo "::error::❌ $1"; printf -- "- ❌ **%s**\n" "$1" >> "$SUMMARY"; FAIL=1; }
         info(){ echo "ℹ️  $1"; }
         FAIL=0
+        case "$CONTRACT" in
+          full|minimal) ;;
+          *) bad "contract must be 'full' or 'minimal', got '$CONTRACT'"; exit 1 ;;
+        esac
+        # Glance properties of the throwaway image: the guest agent channel
+        # only for images that ship the agent (contract full).
+        QGA_PROPS=(--property hw_qemu_guest_agent=yes)
+        [[ "$CONTRACT" == "minimal" ]] && QGA_PROPS=()
 
         # Spread smokes over the available regions (same project and
         # credential in each): catches region-specific breakage over time.
@@ -270,7 +290,7 @@ runs:
         openstack image create \
           --disk-format qcow2 --container-format bare \
           --tag "$TAG" \
-          --property hw_qemu_guest_agent=yes "${FW_PROPS[@]}" \
+          "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
           "$IMG_NAME" >/dev/null
 
         info "Glance: triggering web-download import from $IMG_URL"
@@ -312,7 +332,7 @@ runs:
             --disk-format qcow2 --container-format bare \
             --file "/tmp/${FILENAME}" \
             --tag "$TAG" \
-            --property hw_qemu_guest_agent=yes "${FW_PROPS[@]}" \
+            "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
             "$IMG_NAME" >/dev/null
           rm -f "/tmp/${FILENAME}"
         fi
@@ -442,8 +462,11 @@ runs:
         # without cloud-init in $PATH (we still passed cloud-init since
         # SSH key was injected, but `cloud-init status` may not be in the
         # default user PATH on minimal images: fall back to a log peek).
-        ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
-        if echo "$ci" | grep -q "status: done"; then
+        ci=""
+        [[ "$CONTRACT" == "minimal" ]] || ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
+        if [[ "$CONTRACT" == "minimal" ]]; then
+          info "contract minimal: no cloud-init check (the image's metadata client installed the key, as SSH just proved)"
+        elif echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
         elif echo "$ci" | grep -q "status: error"; then
           bad "cloud-init in error state"
@@ -497,7 +520,9 @@ runs:
           -o PreferredAuthentications=none "nobody@${IP}" true 2>&1 || true; } \
           | sed -n 's/.*Permission denied (\(.*\)).*/\1/p' | tail -1 || true)
         info "SSH auth methods offered: ${methods:-unknown}"
-        if [[ ",${methods}," == *",password,"* ]]; then
+        if [[ ",${methods}," == *",password,"* && "$CONTRACT" == "minimal" ]]; then
+          echo "::warning::sshd offers password authentication (contract minimal: test image with a well-known password)"
+        elif [[ ",${methods}," == *",password,"* ]]; then
           bad "sshd offers password authentication"
         else
           ok "sshd does not offer password authentication"
@@ -545,13 +570,16 @@ runs:
         # BusyBox pgrep -x does not match qemu-ga (Alpine): pidof as fallback; FreeBSD
         # has no pidof but a working pgrep -x.
         qga=""
+        [[ "$CONTRACT" == "minimal" ]] && qga=skipped
         for _ in 1 2 3 4 5 6; do
+          [ "$qga" = skipped ] && break
           qga=$($SSH 'if pgrep -x qemu-ga >/dev/null 2>&1 || pidof qemu-ga >/dev/null 2>&1; then echo running; elif command -v qemu-ga >/dev/null 2>&1 || [ -x /usr/bin/qemu-ga ] || [ -x /usr/sbin/qemu-ga ] || [ -x /usr/local/bin/qemu-ga ]; then echo installed; else echo missing; fi' 2>/dev/null | tail -1)
           [ "$qga" = running ] && break
           sleep 10
         done
         case "$qga" in
           running) contract ok "qemu-guest-agent running (guest agent channel up)" ;;
+          skipped) info "contract minimal: no qemu-guest-agent check" ;;
           installed) contract ko "qemu-guest-agent installed but not running" ;;
           *) contract ko "qemu-guest-agent missing (catalog advertises hw_qemu_guest_agent and quiesced snapshots)" ;;
         esac
@@ -607,7 +635,11 @@ runs:
         if [[ "$FAIL" -ne 0 ]]; then
           echo "**Result:** ❌ runtime smoke failed" >> "$SUMMARY"
         else
-          echo "**Result:** ✅ runtime smoke passed (boot + cloud-init + SSH + DNS on Infomaniak)" >> "$SUMMARY"
+          if [[ "$CONTRACT" == "minimal" ]]; then
+            echo "**Result:** ✅ runtime smoke passed (minimal contract: boot + injected key + SSH + DNS on Infomaniak)" >> "$SUMMARY"
+          else
+            echo "**Result:** ✅ runtime smoke passed (boot + cloud-init + SSH + DNS on Infomaniak)" >> "$SUMMARY"
+          fi
         fi
 
         # Exit code captured here so the cleanup step always runs.

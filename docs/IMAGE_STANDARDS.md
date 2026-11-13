@@ -257,6 +257,16 @@ cloud image. The post-publish runtime smoke closes that loop.
 - Each caller workflow MUST set `runtime_smoke_login_user`. Images that
   are not general-purpose VMs (Octavia amphora, Manila service image)
   leave it empty and document a dedicated test.
+- **Test images** (CirrOS) republish the upstream file unchanged
+  (`passthrough: true`: no customization, no sysprep, no sparsify, the
+  published SHA-256 must equal the upstream one) and are checked against
+  `contract: minimal`: SSH with the key injected by the image's own
+  metadata client as `runtime_smoke_login_user`, DNS, hostname, root
+  growth, passwordless sudo and IPv6 stay required; the cloud-init and
+  qemu-guest-agent checks are skipped, and an sshd offering passwords is
+  only reported (well-known password by design). Such images are not
+  general-purpose: sections C and D do not apply, their README says so at
+  the top, and `oic-sync` skips them unless they are named.
 - Failure blocks the release run; cleanup always runs.
 
 [2]: ../actions/smoke-openstack/
