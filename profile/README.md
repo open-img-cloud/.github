@@ -85,12 +85,19 @@ Versions below are read live from each image's published manifest.
 
 > CirrOS is republished byte for byte from upstream (checksum-verified, signed, boot-tested) for testing a cloud with Tempest or smoke checks. It has a well-known password: never use it for workloads.
 
+### Rescue image
+
+| Image | Latest | Login user | Status | Repository |
+|---|---|---|---|---|
+| [Cloud Rescue](https://openimages.cloud/images/cloud-rescue/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Fcloud-rescue%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | `rescue` | ✅ Stable | [`cloud-rescue`](https://github.com/open-img-cloud/cloud-rescue) |
+
+> Boot it with `openstack server rescue` (or lend it a Proxmox disk) to repair a VM that no longer starts: a menu mounts the broken system, checks filesystems, resets passwords, adds SSH keys and rebuilds the boot loader. Rocky Linux 9 based.
+
 ### In preparation
 
 | Image | Purpose | Repository |
 |---|---|---|
 | Windows Server 2022 | Windows guests with cloudbase-init | [`windows-server-2022`](https://github.com/open-img-cloud/windows-server-2022) |
-| Cloud Rescue | Bootable rescue and diagnostic image | [`cloud-rescue`](https://github.com/open-img-cloud/cloud-rescue) |
 
 > Need another distribution? [Open an issue](https://github.com/open-img-cloud/.github/issues): new images are added on demand.
 
