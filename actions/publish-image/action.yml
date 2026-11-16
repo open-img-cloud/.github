@@ -1,10 +1,12 @@
 name: 'Publish image to Infomaniak Object Storage'
-description: 'Uploads a directory of artifacts to Infomaniak Object Storage (Ceph S3, single source of truth), generates an HTML index, and optionally syncs the version to the latest/ alias.'
+description: 'Uploads a directory of artifacts to Infomaniak Object Storage (Ceph S3, single source of truth), generates an HTML index, and optionally points the latest/ alias to the version.'
 
 # Bucket model: one public bucket per distribution, named after `os_name`, in
 # the Infomaniak Public Cloud project `Images_Storage`. The bucket must exist
 # before this action runs: the action does not create buckets. Path inside
-# the bucket: `<version>/<filename>`, plus an optional `latest/` mirror.
+# the bucket: `<version>/<filename>`, plus `latest.json` at the bucket root, which the
+# images-router Worker reads to serve `latest/<filename>` from `<version>/<filename>`
+# (one stored copy per release; latest/ used to be a full second copy).
 # Public reads go through the images-router Worker (images.openimages.cloud).
 
 inputs:
@@ -22,7 +24,7 @@ inputs:
     required: false
     default: ''
   also_latest:
-    description: 'If "true", mirror the version directory under latest/ inside the bucket.'
+    description: 'If "true", point the latest/ alias to this version (latest.json at the bucket root).'
     required: false
     default: 'true'
 
@@ -208,23 +210,24 @@ runs:
           --endpoint-url "$S3_ENDPOINT" \
           "$ARTIFACTS_DIR" "$DEST_PREFIX"
 
-    - name: Sync version to latest/
+    - name: Point latest/ to this version
+      # images-router serves latest/<file> from <version>/<file> through this pointer;
+      # written after the versioned upload, so the alias never names a missing file.
       if: inputs.also_latest == 'true'
       shell: bash
       env:
-        SRC: s3://${{ steps.resolve.outputs.bucket }}/${{ inputs.version }}/
-        DST: s3://${{ steps.resolve.outputs.bucket }}/latest/
+        DST: s3://${{ steps.resolve.outputs.bucket }}/latest.json
+        VERSION: ${{ inputs.version }}
         S3_ENDPOINT: ${{ inputs.s3_endpoint }}
         AWS_ACCESS_KEY_ID: ${{ inputs.s3_key_id }}
         AWS_SECRET_ACCESS_KEY: ${{ inputs.s3_secret }}
       run: |
         set -euo pipefail
-        aws s3 sync \
-          --delete --no-progress \
-          --cache-control "public, max-age=300" \
-          --metadata-directive REPLACE \
-          --endpoint-url "$S3_ENDPOINT" \
-          "$SRC" "$DST"
+        jq -cn --arg v "$VERSION" '{version: $v}' | aws s3 cp - "$DST" \
+          --no-progress \
+          --content-type application/json \
+          --cache-control no-cache \
+          --endpoint-url "$S3_ENDPOINT"
 
     - name: Rebuild versions.json at the bucket root
       # Lists every published version with its MANIFEST(s), so clients can
