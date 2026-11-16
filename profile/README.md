@@ -5,7 +5,8 @@
 - 🌐 **Website and catalog**: <https://openimages.cloud>
 - 📦 **Image registry**: <https://images.openimages.cloud> (Swiss-hosted Infomaniak Object Storage behind the Cloudflare CDN)
 - 🔐 **Verification guide**: <https://openimages.cloud/verify/>
-- 📖 **Documentation**: <https://github.com/open-img-cloud/docs> (getting started, image contract, catalog index, oic-sync, architecture)
+- 📖 **Documentation**: <https://openimages.cloud/docs/> (getting started, image contract, catalog index, oic-sync, architecture)
+- 🔄 **oic-sync**: keeps the images up to date in OpenStack Glance or as Proxmox VE templates (`pipx install oic-sync`, `.deb`, `.rpm`, container): <https://openimages.cloud/oic-sync/>
 - 📜 **Conventions and image standards**: [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md), [`IMAGE_STANDARDS.md`](https://github.com/open-img-cloud/.github/blob/main/docs/IMAGE_STANDARDS.md)
 
 ---
@@ -16,7 +17,7 @@
 - 🧪 **Boot-tested twice** before and after publishing: in QEMU with a ConfigDrive, then on a live OpenStack (cloud-init, SSH and DNS must pass).
 - 🔒 **Keyless cosign signatures** bound to the identity of our build workflows and logged in Sigstore's Rekor: nothing to manage on your side.
 - ☁️ **One cloud-init policy** for every distribution: OpenStack (ConfigDrive), Proxmox (NoCloud) and any provider that speaks either.
-- 📌 **Versioned, immutable paths**: `images.openimages.cloud/<os>/<version>/<file>`, plus a `latest/` alias refreshed on each release.
+- 📌 **Versioned, immutable paths**: `images.openimages.cloud/<os>/<version>/<file>`, plus a `latest/` alias that follows each release.
 
 ---
 
@@ -140,5 +141,7 @@ Image repositories are released under **GPL-2.0** (GPL-3.0 for `freebsd`), the w
 Issues and pull requests are welcome: a new distribution, another architecture (arm64, riscv64), a security report or a pipeline improvement. To add an image repo, start with [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md).
 
 ---
+
+⭐ **Find these images useful? [Star the project](https://github.com/open-img-cloud/.github)**: it is the easiest way to help other operators find it.
 
 **Build once. Verify everywhere. Deploy anywhere.**
