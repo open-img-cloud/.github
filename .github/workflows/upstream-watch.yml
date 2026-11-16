@@ -32,9 +32,11 @@ on:
         type: string
         default: 'auto/upstream-bump'
       pr_assignees:
-        description: 'Comma-separated list of GitHub logins to assign to the PR.'
+        description: >-
+          Comma-separated list of GitHub logins to assign to the PR. Assignment is what notifies
+          the maintainers (GitHub email and mobile push) that a bump waits for a merge.
         type: string
-        default: ''
+        default: 'kallioli'
       runner_labels:
         description: 'Runner labels (defaults to GitHub-hosted ubuntu-latest, no KVM needed).'
         type: string
