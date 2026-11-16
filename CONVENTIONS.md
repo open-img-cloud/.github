@@ -89,14 +89,15 @@ https://images.openimages.cloud/<os_name>/latest/<filename>
 Each image repo gets its **own public bucket** on Infomaniak Object
 Storage (Ceph S3, Public Cloud project `Images_Storage`, region `dc4-a`),
 named exactly after the repo / OS slug (`os_name`). It is the single
-source of truth: versioning is enabled (non-current versions kept 30
-days). The bucket must exist before a release fires: the publish action
+source of truth: versioning is enabled (replaced copies expire after 7
+days, lifecycle rule set by `oic-bucket.py`). The bucket must exist before a release fires: the publish action
 does not create it.
 
 ```
 Bucket                <os_name>          (e.g. alpaquita-linux, alpine-linux)
 Path inside bucket     <version>/<filename>      ← immutable, max-age=31536000
-                       latest/<filename>          ← mutable alias, max-age=300
+                       latest.json                ← {"version": "<version>"}, the latest/ pointer
+Public alias           latest/<filename>          ← served by images-router from <version>/, max-age=300
 ```
 
 The public URL **stays unchanged**:
@@ -362,8 +363,9 @@ date -u -d "$last_mod" +'%Y.%m.%d'
 ## Path conventions on the public CDN
 
 Versioned objects are immutable and served with `Cache-Control: max-age=31536000, immutable`.
-The `latest/` directory is a snapshot copy of the most recent build; it carries
-`max-age=300` and is purged from the Cloudflare edge after each release.
+The `latest/` path is an alias: images-router reads `latest.json` at the bucket root and
+serves `latest/<filename>` from `<version>/<filename>`, with `max-age=300`. Nothing is
+stored under `latest/`.
 
 Never link to `latest/` from documentation that needs reproducibility: link to
 the versioned path instead.
