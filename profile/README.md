@@ -7,6 +7,7 @@
 - 🔐 **Verification guide**: <https://openimages.cloud/verify/>
 - 📖 **Documentation**: <https://openimages.cloud/docs/> (getting started, image contract, catalog index, oic-sync, architecture)
 - 🔄 **oic-sync**: keeps the images up to date in OpenStack Glance or as Proxmox VE templates (`pipx install oic-sync`, `.deb`, `.rpm`, container): <https://openimages.cloud/oic-sync/>
+- 🧩 **Integrations**: [Terraform/OpenTofu module](https://github.com/open-img-cloud/terraform-openstack-openimages), [Ansible collection](https://github.com/open-img-cloud/ansible-collection-openimages), and a [command generator](https://openimages.cloud/get/) for OpenStack, Proxmox and Terraform
 - 📜 **Conventions and image standards**: [`CONVENTIONS.md`](https://github.com/open-img-cloud/.github/blob/main/CONVENTIONS.md), [`IMAGE_STANDARDS.md`](https://github.com/open-img-cloud/.github/blob/main/docs/IMAGE_STANDARDS.md)
 
 ---
