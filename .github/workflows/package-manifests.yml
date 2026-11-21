@@ -1,0 +1,130 @@
+name: Package manifests
+
+# Lists the packages installed in each published image (packages.json next to the qcow2),
+# so the website can show what changed between two versions. Runs after publication and
+# outside the build workflows: the image is read back from its bucket, checked against the
+# sha256 of versions.json and inspected offline with virt-inspector in the libguestfs builder
+# container. Only the latest two versions of each image are covered; existing manifests are
+# never rewritten. Images libguestfs cannot list (FreeBSD, NixOS, Gentoo...) are skipped.
+#
+# scripts/package_manifests.py does the work. Pull requests touching it run a dry run on
+# three small images (nothing uploaded).
+
+on:
+  schedule:
+    - cron: '45 8 * * *'   # daily, after the 07:30 catalog rebuild
+  workflow_dispatch:
+    inputs:
+      images:
+        description: 'Image ids, space separated (empty: every image)'
+        required: false
+        default: ''
+      versions:
+        description: 'Newest versions per image to cover'
+        required: false
+        default: '2'
+      upload:
+        description: 'Upload the manifests (false: dry run)'
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/package-manifests.yml'
+      - 'scripts/package_manifests.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-manifests-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+env:
+  BUILDER: ghcr.io/stackopshq/libguestfs-tools:2.1.1
+  BUILDER_IDENTITY: '^https://github.com/stackopshq/libguestfs-tools-container/'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: List the manifests to make
+        id: list
+        env:
+          IMAGES: ${{ github.event_name == 'pull_request' && 'cirros alpine-linux debian-13' || inputs.images }}
+          VERSIONS: ${{ github.event_name == 'pull_request' && '1' || inputs.versions || '2' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/package_manifests.py discover --images "$IMAGES" --versions "$VERSIONS" > matrix.json
+          echo "matrix=$(jq -c '{include: .}' matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq length matrix.json)" >> "$GITHUB_OUTPUT"
+
+  verify-builder:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.verify.outputs.ref }}
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Verify the builder image signature
+        id: verify
+        run: |
+          set -euo pipefail
+          json=$(cosign verify "$BUILDER" \
+            --certificate-identity-regexp "$BUILDER_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --output json)
+          digest=$(echo "$json" | jq -r '.[0].critical.image."docker-manifest-digest"')
+          [[ "$digest" == sha256:* ]] || { echo "::error::no digest in cosign output"; exit 1; }
+          echo "ref=${BUILDER%%:*}@$digest" >> "$GITHUB_OUTPUT"
+
+  extract:
+    needs: [discover, verify-builder]
+    if: ${{ needs.discover.outputs.count != '0' }}
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Pull the verified builder
+        env:
+          REF: ${{ needs.verify-builder.outputs.ref }}
+        run: docker pull --quiet "$REF"
+
+      - name: Configure aws-cli for Infomaniak Object Storage
+        run: |
+          set -euo pipefail
+          cfg="$RUNNER_TEMP/oic-aws-config"
+          cat > "$cfg" <<'CFG'
+          [default]
+          region = gva2
+          endpoint_url = https://s3.gva2.infomaniak.cloud
+          request_checksum_calculation = when_required
+          response_checksum_validation = when_required
+          s3 =
+              addressing_style = path
+          CFG
+          echo "AWS_CONFIG_FILE=$cfg" >> "$GITHUB_ENV"
+
+      - name: Make the package manifests
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OIC_S3_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OIC_S3_SECRET }}
+          REF: ${{ needs.verify-builder.outputs.ref }}
+          ENTRY: ${{ toJSON(matrix) }}
+          UPLOAD: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.upload) }}
+        run: |
+          set -euo pipefail
+          sudo chmod 0666 /dev/kvm || true
+          args=(--entry "$ENTRY" --builder "$REF")
+          [[ "$UPLOAD" == "true" ]] && args+=(--upload)
+          python3 scripts/package_manifests.py extract "${args[@]}"
