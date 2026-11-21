@@ -11,7 +11,9 @@ container) and the list of installed packages is written next to it:
      "source_sha256": ..., "generated_at": ..., "format": "rpm|deb|apk|pacman|...",
      "distro": ..., "packages": [{"name": ..., "version": ..., "arch": ...}]}
 
-Images libguestfs cannot list (FreeBSD, NixOS, Gentoo...) are skipped, not failed.
+Images libguestfs inspection does not list are read directly (rpm, apk and Gentoo
+databases, scripts/list_packages.py); the rest (FreeBSD on ZFS, NixOS, CirrOS) is skipped,
+not failed.
 
     package_manifests.py discover [--images "a b"] [--versions 2]    -> GitHub matrix (stdout)
     package_manifests.py extract --items JSON --builder IMAGE@DIGEST [--upload]
@@ -124,6 +126,30 @@ def parse_inspector(xml: str) -> tuple[str | None, str | None, list[dict]]:
     return fmt, distro, packages
 
 
+def fallback_packages(builder: str, work: Path) -> tuple[str | None, str | None, list[dict]]:
+    """scripts/list_packages.py in the builder: rpm, apk or Gentoo database read directly."""
+    scripts = Path(__file__).resolve().parent
+    res = subprocess.run(
+        [
+            "docker", "run", "--rm", "--device=/dev/kvm",
+            "-v", f"{work}:/work:ro",
+            "-v", f"{scripts}:/scripts:ro",
+            builder,
+            "python3", "/scripts/list_packages.py", "/work/image.qcow2",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    if res.returncode != 0:
+        tail = (res.stderr or "").strip().splitlines()[-3:]
+        print(f"  fallback listing failed: {' | '.join(tail)}")
+        return None, None, []
+    doc = json.loads(res.stdout)
+    packages = sorted(doc.get("packages") or [], key=lambda p: (p["name"], p.get("arch") or ""))
+    return doc.get("format"), doc.get("distro"), packages
+
+
 def _aws(*args: str) -> None:
     subprocess.run(["aws", *args], check=True)
 
@@ -166,6 +192,13 @@ def extract_one(
             print(f"  virt-inspector failed: {' | '.join(tail)}")
             return "skipped"
         fmt, distro, packages = parse_inspector(res.stdout)
+        if not packages:
+            # Inspection does not know the distribution (Amazon Linux, Alpaquita) or cannot
+            # list it (Gentoo): read the package database directly.
+            fmt, fb_distro, packages = fallback_packages(builder, work)
+            distro = distro or fb_distro
+            if packages:
+                print(f"  inspection listed nothing, read the {fmt} database directly")
         if not packages:
             print(f"  no package list readable by libguestfs (distro {distro or 'unknown'})")
             return "skipped"
