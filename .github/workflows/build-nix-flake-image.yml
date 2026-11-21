@@ -461,6 +461,7 @@ jobs:
           version: ${{ steps.vars.outputs.version }}
           filename: ${{ steps.vars.outputs.output_filename }}
           cdn_hostname: ${{ inputs.cf_public_hostname }}
+          check_latest: ${{ inputs.sync_latest }}
 
       - name: Runtime smoke on Infomaniak Public Cloud
         if: ${{ inputs.publish && inputs.runtime_smoke && inputs.runtime_smoke_login_user != '' }}
