@@ -31,6 +31,7 @@ on:
     paths:
       - '.github/workflows/package-manifests.yml'
       - 'scripts/package_manifests.py'
+      - 'scripts/list_packages.py'
 
 permissions:
   contents: read
@@ -55,7 +56,7 @@ jobs:
       - name: List the manifests to make
         id: list
         env:
-          IMAGES: ${{ github.event_name == 'pull_request' && 'cirros alpine-linux debian-13' || inputs.images }}
+          IMAGES: ${{ github.event_name == 'pull_request' && 'cirros alpine-linux debian-13 amazon-linux-2 alpaquita-linux gentoo-linux' || inputs.images }}
           VERSIONS: ${{ github.event_name == 'pull_request' && '2' || inputs.versions || '2' }}
         run: |
           set -euo pipefail
