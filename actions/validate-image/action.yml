@@ -38,6 +38,10 @@ inputs:
     description: 'Hard cap on the qcow2 size in bytes. 0 = no cap. Default 2 GB.'
     required: false
     default: '2147483648'  # 2 GB
+  check_latest:
+    description: 'Check the latest/ alias too. false when the release does not move latest/ (older OpenStack series rebuilt by hand).'
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -56,6 +60,7 @@ runs:
         CERT_RE:    ${{ inputs.cert_identity_regexp }}
         OIDC_ISS:   ${{ inputs.cert_oidc_issuer }}
         MAX_SIZE:   ${{ inputs.max_size_bytes }}
+        CHECK_LATEST: ${{ inputs.check_latest }}
       run: |
         set -euo pipefail
         BASE="https://${CDN}/${OS_NAME}/${VERSION}"
@@ -120,12 +125,16 @@ runs:
         else
           bad "Versioned cache-control should be 'public, max-age=31536000, immutable' (got: '$cc_versioned')"
         fi
-        info "Checking latest/ cache-control"
-        cc_latest=$(curl -sIfL "$LATEST/${FILENAME}" | awk -F': ' 'tolower($1)=="cache-control"{sub(/\r$/,"",$2); print $2; exit}' || echo '')
-        if [[ "$cc_latest" == *"max-age=300"* ]]; then
-          ok "latest/ URL has max-age=300"
+        if [[ "$CHECK_LATEST" != "true" ]]; then
+          info "latest/ not moved by this release, its cache-control is not checked"
         else
-          bad "latest/ cache-control should include 'max-age=300' (got: '$cc_latest')"
+          info "Checking latest/ cache-control"
+          cc_latest=$(curl -sIfL "$LATEST/${FILENAME}" | awk -F': ' 'tolower($1)=="cache-control"{sub(/\r$/,"",$2); print $2; exit}' || echo '')
+          if [[ "$cc_latest" == *"max-age=300"* ]]; then
+            ok "latest/ URL has max-age=300"
+          else
+            bad "latest/ cache-control should include 'max-age=300' (got: '$cc_latest')"
+          fi
         fi
 
         # ---- H. Image size threshold ----

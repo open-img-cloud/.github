@@ -1048,6 +1048,7 @@ jobs:
           filename: ${{ steps.vars.outputs.output_filename }}
           variant: ${{ inputs.variant }}
           cdn_hostname: ${{ inputs.cf_public_hostname }}
+          check_latest: ${{ inputs.sync_latest }}
 
       - name: Runtime smoke on Infomaniak Public Cloud
         # Final-stage end-to-end check: pulls the just-published qcow2
