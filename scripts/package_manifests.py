@@ -136,7 +136,9 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def extract_one(image: str, bucket: str, item: dict, builder: str, work: Path, upload: bool) -> str:
+def extract_one(
+    image: str, bucket: str, item: dict, builder: str, work: Path, upload: bool, keep: Path | None
+) -> str:
     """Return 'written', 'skipped' or raise."""
     qcow2 = work / "image.qcow2"
     qcow2.unlink(missing_ok=True)
@@ -181,6 +183,10 @@ def extract_one(image: str, bucket: str, item: dict, builder: str, work: Path, u
         out = work / "packages.json"
         out.write_text(json.dumps(doc, indent=1) + "\n")
         print(f"  {len(packages)} {fmt} packages ({distro})")
+        if keep:
+            copy = keep / bucket / item["target"]
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            copy.write_bytes(out.read_bytes())
         if upload:
             _aws(
                 "s3", "cp", "--no-progress", "--only-show-errors",
@@ -195,7 +201,7 @@ def extract_one(image: str, bucket: str, item: dict, builder: str, work: Path, u
         qcow2.unlink(missing_ok=True)
 
 
-def extract(entry: dict, builder: str, upload: bool) -> int:
+def extract(entry: dict, builder: str, upload: bool, keep: Path | None) -> int:
     summary = []
     failed = 0
     with tempfile.TemporaryDirectory(prefix="oic-pkg-", dir=os.environ.get("RUNNER_TEMP")) as tmp:
@@ -204,7 +210,7 @@ def extract(entry: dict, builder: str, upload: bool) -> int:
             label = f"{entry['image']} {item['version']}" + (f" ({item['variant']})" if item["variant"] else "")
             print(f"::group::{label}")
             try:
-                result = extract_one(entry["image"], entry["bucket"], item, builder, work, upload)
+                result = extract_one(entry["image"], entry["bucket"], item, builder, work, upload, keep)
             except Exception as e:  # one image version failing does not stop the others
                 print(f"::error::{label}: {e}")
                 result = "failed"
@@ -229,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--entry", required=True, help="one matrix entry (JSON)")
     e.add_argument("--builder", required=True)
     e.add_argument("--upload", action="store_true")
+    e.add_argument("--keep", type=Path, help="also copy the manifests to this directory")
     args = p.parse_args(argv)
     if args.cmd == "discover":
         matrix = discover(set(args.images.split()), max(1, args.versions))
@@ -237,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         for m in matrix:
             print(f"{m['image']}: {len(m['items'])} manifest(s) to make", file=sys.stderr)
         return 0
-    return extract(json.loads(args.entry), args.builder, args.upload)
+    return extract(json.loads(args.entry), args.builder, args.upload, args.keep)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ name: Package manifests
 # never rewritten. Images libguestfs cannot list (FreeBSD, NixOS, Gentoo...) are skipped.
 #
 # scripts/package_manifests.py does the work. Pull requests touching it run a dry run on
-# three small images (nothing uploaded).
+# three small images (nothing uploaded; the manifests are kept as run artifacts).
 
 on:
   schedule:
@@ -56,7 +56,7 @@ jobs:
         id: list
         env:
           IMAGES: ${{ github.event_name == 'pull_request' && 'cirros alpine-linux debian-13' || inputs.images }}
-          VERSIONS: ${{ github.event_name == 'pull_request' && '1' || inputs.versions || '2' }}
+          VERSIONS: ${{ github.event_name == 'pull_request' && '2' || inputs.versions || '2' }}
         run: |
           set -euo pipefail
           python3 scripts/package_manifests.py discover --images "$IMAGES" --versions "$VERSIONS" > matrix.json
@@ -125,6 +125,15 @@ jobs:
         run: |
           set -euo pipefail
           sudo chmod 0666 /dev/kvm || true
-          args=(--entry "$ENTRY" --builder "$REF")
+          args=(--entry "$ENTRY" --builder "$REF" --keep "$RUNNER_TEMP/manifests")
           [[ "$UPLOAD" == "true" ]] && args+=(--upload)
           python3 scripts/package_manifests.py extract "${args[@]}"
+
+      - name: Keep the manifests as a run artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: packages-${{ matrix.image }}
+          path: ${{ runner.temp }}/manifests
+          retention-days: 7
+          if-no-files-found: ignore
