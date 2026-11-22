@@ -69,6 +69,11 @@ inputs:
       passwords is only reported (CirrOS ships a well-known password by
       design). SSH with the injected key, DNS, hostname, root growth,
       sudo and IPv6 keep their usual rules.
+      "flatcar": images provisioned by Ignition and afterburn instead of
+      cloud-init (Flatcar Container Linux): the cloud-init check becomes
+      `systemctl is-system-running` reaching "running"; every other check
+      (SSH key, DNS, hostname, root growth, sudo, guest agent, IPv6) keeps
+      its usual rule.
       "appliance": network appliances without cloud-init (OPNsense) whose
       openimages.cloud first-boot layer applies the metadata. The login
       user is root (commands run through `sh -s`, the login shell may be a
@@ -227,8 +232,8 @@ runs:
         info(){ echo "ℹ️  $1"; }
         FAIL=0
         case "$CONTRACT" in
-          full|minimal|appliance) ;;
-          *) bad "contract must be 'full', 'minimal' or 'appliance', got '$CONTRACT'"; exit 1 ;;
+          full|minimal|appliance|flatcar) ;;
+          *) bad "contract must be 'full', 'minimal', 'appliance' or 'flatcar', got '$CONTRACT'"; exit 1 ;;
         esac
         # Glance properties of the throwaway image: the guest agent channel
         # only for images that ship the agent (contract full).
@@ -527,6 +532,19 @@ runs:
           fi
         elif [[ "$CONTRACT" == "minimal" ]]; then
           info "contract minimal: no cloud-init check (the image's metadata client installed the key, as SSH just proved)"
+        elif [[ "$CONTRACT" == "flatcar" ]]; then
+          # Ignition and afterburn instead of cloud-init: first boot is done
+          # when systemd reaches 'running' (afterburn installed the key, as
+          # SSH just proved; extend-filesystems and the hostname unit ran).
+          st=$($SSH 'timeout 300 systemctl is-system-running --wait 2>/dev/null' || true)
+          if [[ "$st" == *running* && "$st" != *degraded* ]]; then
+            ok "systemd reports 'running' (Ignition and afterburn first boot finished)"
+          else
+            bad "systemd reports '${st:-unknown}' instead of 'running'"
+            echo "::group::failed units"
+            $SSH 'systemctl --failed --no-legend; journalctl -b -p err --no-pager | tail -30' || true
+            echo "::endgroup::"
+          fi
         elif echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
         elif echo "$ci" | grep -q "status: error"; then
@@ -760,6 +778,8 @@ runs:
             echo "**Result:** ✅ runtime smoke passed (appliance contract: boot + first-boot layer + SSH + web interface + password on Infomaniak)" >> "$SUMMARY"
           elif [[ "$CONTRACT" == "minimal" ]]; then
             echo "**Result:** ✅ runtime smoke passed (minimal contract: boot + injected key + SSH + DNS on Infomaniak)" >> "$SUMMARY"
+          elif [[ "$CONTRACT" == "flatcar" ]]; then
+            echo "**Result:** ✅ runtime smoke passed (flatcar contract: boot + Ignition/afterburn + SSH + DNS on Infomaniak)" >> "$SUMMARY"
           else
             echo "**Result:** ✅ runtime smoke passed (boot + cloud-init + SSH + DNS on Infomaniak)" >> "$SUMMARY"
           fi
