@@ -69,6 +69,16 @@ inputs:
       passwords is only reported (CirrOS ships a well-known password by
       design). SSH with the injected key, DNS, hostname, root growth,
       sudo and IPv6 keep their usual rules.
+      "appliance": network appliances without cloud-init (OPNsense) whose
+      openimages.cloud first-boot layer applies the metadata. The login
+      user is root (commands run through `sh -s`, the login shell may be a
+      menu or csh), the key is RSA, port 443 is opened. Instead of
+      cloud-init and sudo: the first-boot layer reports done
+      (/var/log/oic-firstboot.log), the web interface answers on 443 from
+      the Internet, and the generated password is readable both with
+      `nova get-password` and on the serial console, with the same value.
+      SSH, DNS, hostname, root growth, guest agent and IPv6 keep their
+      usual rules.
     required: false
     default: 'full'
 
@@ -208,8 +218,8 @@ runs:
         info(){ echo "ℹ️  $1"; }
         FAIL=0
         case "$CONTRACT" in
-          full|minimal) ;;
-          *) bad "contract must be 'full' or 'minimal', got '$CONTRACT'"; exit 1 ;;
+          full|minimal|appliance) ;;
+          *) bad "contract must be 'full', 'minimal' or 'appliance', got '$CONTRACT'"; exit 1 ;;
         esac
         # Glance properties of the throwaway image: the guest agent channel
         # only for images that ship the agent (contract full).
@@ -266,7 +276,13 @@ runs:
         # Local SSH keypair (private kept on runner, public uploaded).
         WORK=$(mktemp -d)
         trap 'rm -rf "$WORK"' EXIT
-        ssh-keygen -t ed25519 -N '' -f "$WORK/id" -C "$TAG" >/dev/null
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          # RSA: the appliance stores its generated password for `nova get-password`,
+          # which only works with an RSA key.
+          ssh-keygen -t rsa -b 3072 -m PEM -N '' -f "$WORK/id" -C "$TAG" >/dev/null
+        else
+          ssh-keygen -t ed25519 -N '' -f "$WORK/id" -C "$TAG" >/dev/null
+        fi
         PUBKEY="$(cat "$WORK/id.pub")"
 
         # ---- 0. Auth probe ----
@@ -342,6 +358,9 @@ runs:
         openstack keypair create --public-key "$WORK/id.pub" "$KEY_NAME" >/dev/null
         openstack security group create --description "$TAG" "$SG_NAME" >/dev/null
         openstack security group rule create --proto tcp --dst-port 22 "$SG_NAME" >/dev/null
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          openstack security group rule create --proto tcp --dst-port 443 "$SG_NAME" >/dev/null
+        fi
         openstack security group rule create --proto icmp "$SG_NAME" >/dev/null
         ok "Keypair + security group created"
 
@@ -453,6 +472,13 @@ runs:
         fi
 
         SSH="ssh -i $WORK/id -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${LOGIN_USER}@${IP}"
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          # The appliance login shell may be a menu or csh: run every probe through sh.
+          printf '#!/usr/bin/env bash\nexec ssh -i %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 %q "sh -s" <<< "$*"\n' \
+            "$WORK/id" "${LOGIN_USER}@${IP}" > "$WORK/rsh"
+          chmod +x "$WORK/rsh"
+          SSH="$WORK/rsh"
+        fi
 
         # ---- 7. Identity + cloud-init status ----
         UNAME=$($SSH 'uname -a' || echo '')
@@ -463,8 +489,21 @@ runs:
         # SSH key was injected, but `cloud-init status` may not be in the
         # default user PATH on minimal images: fall back to a log peek).
         ci=""
-        [[ "$CONTRACT" == "minimal" ]] || ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
-        if [[ "$CONTRACT" == "minimal" ]]; then
+        [[ "$CONTRACT" == "full" ]] && ci=$($SSH 'command -v cloud-init >/dev/null && cloud-init status --wait --long 2>&1 || sudo cat /var/log/cloud-init.log 2>/dev/null | tail -3' || echo '')
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          fb=""
+          for _ in $(seq 1 24); do
+            fb=$($SSH 'tail -1 /var/log/oic-firstboot.log 2>/dev/null' || echo '')
+            [[ "$fb" == *"status: done"* ]] && break
+            sleep 5
+          done
+          if [[ "$fb" == *"status: done"* ]]; then
+            ok "first-boot layer reported 'status: done'"
+          else
+            bad "first-boot layer did not finish (last line: ${fb:-none})"
+            $SSH 'cat /var/log/oic-firstboot.log' || true
+          fi
+        elif [[ "$CONTRACT" == "minimal" ]]; then
           info "contract minimal: no cloud-init check (the image's metadata client installed the key, as SSH just proved)"
         elif echo "$ci" | grep -q "status: done"; then
           ok "cloud-init reported 'status: done'"
@@ -560,7 +599,9 @@ runs:
         else
           contract ko "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
         fi
-        if $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          info "contract appliance: the login user is root, no sudo check"
+        elif $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
           contract ok "default user can become root without a password (sudo or doas)"
         else
           contract ko "default user cannot become root (no passwordless sudo or doas)"
@@ -584,6 +625,47 @@ runs:
           installed) contract ko "qemu-guest-agent installed but not running" ;;
           *) contract ko "qemu-guest-agent missing (catalog advertises hw_qemu_guest_agent and quiesced snapshots)" ;;
         esac
+        # Appliance: web interface on the WAN, generated password readable
+        # with nova get-password and on the serial console (same value).
+        if [[ "$CONTRACT" == "appliance" ]]; then
+          gui=000
+          for _ in $(seq 1 24); do
+            gui=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "https://${IP}/" || echo 000)
+            [[ "$gui" =~ ^(200|301|302|401|403)$ ]] && break
+            sleep 5
+          done
+          if [[ "$gui" =~ ^(200|301|302|401|403)$ ]]; then
+            ok "web interface answers on https://${IP}/ (HTTP $gui)"
+          else
+            bad "web interface not reachable on https://${IP}/ (HTTP $gui)"
+          fi
+          enc=""
+          for _ in $(seq 1 12); do
+            enc=$(python3 - "$SRV_NAME" <<'PY' 2>/dev/null || true
+        import sys, openstack
+        conn = openstack.connect()
+        server = conn.compute.find_server(sys.argv[1], ignore_missing=False)
+        print(conn.compute.get_server_password(server) or "")
+        PY
+        )
+            [[ -n "$enc" ]] && break
+            sleep 5
+          done
+          pw=""
+          [[ -n "$enc" ]] && pw=$(printf '%s' "$enc" | openssl base64 -d -A | openssl pkeyutl -decrypt -inkey "$WORK/id" 2>/dev/null || true)
+          if [[ -n "$pw" ]]; then
+            echo "::add-mask::$pw"
+            ok "generated password readable with nova get-password"
+            if openstack console log show "$SRV_NAME" 2>/dev/null | tr -d '\r' | grep -qF -- "$pw"; then
+              ok "the same password is on the serial console"
+            else
+              bad "the nova get-password password is not on the serial console"
+            fi
+          else
+            bad "no password readable with nova get-password"
+          fi
+        fi
+
         # IPv6: when Neutron gave the port a global IPv6 address, the guest
         # must have configured it and reach the IPv6 Internet.
         v6=$(openstack server show -f json -c addresses "$SRV_NAME" 2>/dev/null \
@@ -636,7 +718,9 @@ runs:
         if [[ "$FAIL" -ne 0 ]]; then
           echo "**Result:** ❌ runtime smoke failed" >> "$SUMMARY"
         else
-          if [[ "$CONTRACT" == "minimal" ]]; then
+          if [[ "$CONTRACT" == "appliance" ]]; then
+            echo "**Result:** ✅ runtime smoke passed (appliance contract: boot + first-boot layer + SSH + web interface + password on Infomaniak)" >> "$SUMMARY"
+          elif [[ "$CONTRACT" == "minimal" ]]; then
             echo "**Result:** ✅ runtime smoke passed (minimal contract: boot + injected key + SSH + DNS on Infomaniak)" >> "$SUMMARY"
           else
             echo "**Result:** ✅ runtime smoke passed (boot + cloud-init + SSH + DNS on Infomaniak)" >> "$SUMMARY"

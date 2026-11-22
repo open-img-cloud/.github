@@ -86,6 +86,11 @@ on:
         type: string
         required: false
         default: ''
+      runtime_smoke_contract:
+        description: 'Contract of the runtime smoke: full (default, cloud-init images) or appliance (network appliances with the openimages.cloud first-boot layer, e.g. OPNsense). See actions/smoke-openstack.'
+        type: string
+        required: false
+        default: 'full'
       runtime_smoke_strict:
         description: 'Image contract checks (hostname, growpart, root access) fail the smoke.'
         type: boolean
@@ -483,6 +488,7 @@ jobs:
           login_user:                       ${{ inputs.runtime_smoke_login_user }}
           strict:                           ${{ inputs.runtime_smoke_strict }}
           require_ipv6:                     ${{ inputs.runtime_smoke_require_ipv6 }}
+          contract:                         ${{ inputs.runtime_smoke_contract }}
           os_auth_url:                      ${{ secrets.OS_AUTH_URL }}
           os_region_name:                   ${{ secrets.OS_REGION_NAME }}
           os_application_credential_id:     ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}

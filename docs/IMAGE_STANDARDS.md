@@ -267,6 +267,15 @@ cloud image. The post-publish runtime smoke closes that loop.
   only reported (well-known password by design). Such images are not
   general-purpose: sections C and D do not apply, their README says so at
   the top, and `oic-sync` skips them unless they are named.
+- **Network appliances** (OPNsense) run no cloud-init: their
+  openimages.cloud first-boot layer applies the metadata (section D: config
+  drive, NoCloud drive or metadata service; SSH key of `root`, hostname,
+  web interface password) and they are checked against
+  `contract: appliance`: SSH as `root` with an RSA key (probes go through
+  `sh -s`), the first-boot layer reports `status: done`, DNS, hostname,
+  root growth, guest agent and IPv6 as usual, no sudo check, the web
+  interface answers on 443, and the generated password is readable with
+  `nova get-password` and on the serial console, with the same value.
 - Failure blocks the release run; cleanup always runs.
 
 [2]: ../actions/smoke-openstack/
