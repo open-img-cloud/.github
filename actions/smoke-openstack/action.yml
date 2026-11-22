@@ -660,7 +660,9 @@ runs:
             bad "web interface not reachable on https://${IP}/ (HTTP $gui)"
           fi
           enc=""
-          for _ in $(seq 1 12); do
+          # The guest stores it from a background loop once its metadata
+          # service answers (DHCP can be slow): wait up to 3 minutes.
+          for _ in $(seq 1 36); do
             enc=$(python3 - "$SRV_NAME" <<'PY' 2>/dev/null || true
         import sys, openstack
         conn = openstack.connect()
