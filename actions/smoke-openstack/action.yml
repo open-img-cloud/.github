@@ -74,6 +74,14 @@ inputs:
       `systemctl is-system-running` reaching "running"; every other check
       (SSH key, DNS, hostname, root growth, sudo, guest agent, IPv6) keeps
       its usual rule.
+      "talos": Talos Linux, no SSH and no cloud-init. talosctl of the same
+      release (checksum verified with Sidero's cosign signature; cosign
+      must be installed) generates a machine config passed as user data,
+      port 50000 is opened, and the checks go through the Talos API: the
+      generated client certificate is accepted (config applied), machine
+      stage running, hostname from the metadata, IPv4 address, DNS
+      resolvers, EPHEMERAL volume grown to the disk, qemu-guest-agent
+      extension running, IPv6 address of the port.
       "appliance": network appliances without cloud-init (OPNsense) whose
       openimages.cloud first-boot layer applies the metadata. The login
       user is root (commands run through `sh -s`, the login shell may be a
@@ -232,8 +240,8 @@ runs:
         info(){ echo "ℹ️  $1"; }
         FAIL=0
         case "$CONTRACT" in
-          full|minimal|appliance|flatcar) ;;
-          *) bad "contract must be 'full', 'minimal', 'appliance' or 'flatcar', got '$CONTRACT'"; exit 1 ;;
+          full|minimal|appliance|flatcar|talos) ;;
+          *) bad "contract must be 'full', 'minimal', 'appliance', 'flatcar' or 'talos', got '$CONTRACT'"; exit 1 ;;
         esac
         # Glance properties of the throwaway image: the guest agent channel
         # only for images that ship the agent (contract full).
@@ -386,6 +394,9 @@ runs:
         if [[ "$CONTRACT" == "appliance" ]]; then
           openstack security group rule create --proto tcp --dst-port 443 "$SG_NAME" >/dev/null
         fi
+        if [[ "$CONTRACT" == "talos" ]]; then
+          openstack security group rule create --proto tcp --dst-port 50000 "$SG_NAME" >/dev/null
+        fi
         openstack security group rule create --proto icmp "$SG_NAME" >/dev/null
         ok "Keypair + security group created"
 
@@ -431,6 +442,33 @@ runs:
             FLAVOR="$bigger"
           fi
         fi
+        # Talos: no SSH and no cloud-init. talosctl of the same release (its
+        # checksum file verified with Sidero's keyless cosign signature)
+        # generates a machine config, passed as user data; every check then
+        # goes through the Talos API with that config's client certificate.
+        if [[ "$CONTRACT" == "talos" ]]; then
+          rel="https://github.com/siderolabs/talos/releases/download/v${VERSION}"
+          for f in talosctl-linux-amd64 sha256sum.txt sha256sum.txt.bundle; do
+            curl -fsSL --retry 3 -o "$WORK/$f" "$rel/$f" || { bad "cannot download $rel/$f"; exit 1; }
+          done
+          if ! command -v cosign >/dev/null; then
+            bad "contract talos needs cosign to verify talosctl (install it before this action)"; exit 1
+          fi
+          if ! cosign verify-blob --bundle "$WORK/sha256sum.txt.bundle" \
+              --certificate-identity "https://github.com/siderolabs/talos/.github/workflows/ci.yaml@refs/tags/v${VERSION}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$WORK/sha256sum.txt" >/dev/null 2>&1; then
+            bad "sha256sum.txt of Talos v${VERSION} is not signed by the siderolabs/talos release workflow"; exit 1
+          fi
+          if ! (cd "$WORK" && grep -E ' \*?talosctl-linux-amd64$' sha256sum.txt | sha256sum -c - >/dev/null); then
+            bad "talosctl-linux-amd64 does not match the signed sha256sum.txt"; exit 1
+          fi
+          chmod +x "$WORK/talosctl-linux-amd64"
+          TALOSCTL="$WORK/talosctl-linux-amd64"
+          "$TALOSCTL" gen config "$TAG" https://127.0.0.1:6443 --output-dir "$WORK/talos" \
+            --with-docs=false --with-examples=false >/dev/null
+          USER_DATA="$(cat "$WORK/talos/controlplane.yaml")"
+          info "talosctl v${VERSION} verified; machine config generated (passed as user data)"
+        fi
         info "Boot $SRV_NAME (flavor=$FLAVOR)"
         ud_args=()
         if [[ -n "${USER_DATA:-}" ]]; then
@@ -473,6 +511,87 @@ runs:
           openstack server add floating ip "$SRV_NAME" "$FIP"
           IP="$FIP"
           info "Floating IP: $FIP"
+        fi
+
+        # ---- 6t. Talos: every check through the Talos API ----
+        if [[ "$CONTRACT" == "talos" ]]; then
+          TC=("$TALOSCTL" --talosconfig "$WORK/talos/talosconfig" -e "$IP" -n "$IP")
+          up=""
+          end=$((SECONDS + SSH_TIMEOUT))
+          while (( SECONDS < end )); do
+            if timeout 5 bash -c "</dev/tcp/$IP/50000" 2>/dev/null && "${TC[@]}" version >/dev/null 2>&1; then up=1; break; fi
+            sleep 8
+          done
+          if [[ -z "$up" ]]; then
+            bad "Talos API (50000) never accepted the generated config's certificate within ${SSH_TIMEOUT}s (config not applied?)"
+            openstack console log show "$SRV_NAME" | tail -${CONSOLE_LINES:-100} || true
+          else
+            ok "Talos API answers with the generated machine config (config applied, mTLS)"
+            info "$("${TC[@]}" version 2>/dev/null | grep -m1 -A1 '^Server' | tail -1 | sed 's/^[[:space:]]*//')"
+            stage=""
+            for _ in $(seq 1 36); do
+              stage=$("${TC[@]}" get machinestatus -o json 2>/dev/null | jq -r '.spec.stage' | head -1)
+              [[ "$stage" == "running" ]] && break
+              sleep 5
+            done
+            [[ "$stage" == "running" ]] && ok "machine stage: running" || bad "machine stage: ${stage:-unknown} (expected running)"
+            h=$("${TC[@]}" get hostname -o json 2>/dev/null | jq -r '.spec.hostname' | head -1)
+            if [[ -n "$h" && "${SRV_NAME,,}" == "${h,,}"* ]]; then
+              ok "hostname set from metadata ($h)"
+            else
+              bad "hostname '${h:-none}' does not come from the instance name $SRV_NAME"
+            fi
+            addrs=$("${TC[@]}" get addresses -o json 2>/dev/null | jq -r '.spec.address' | sort -u)
+            if grep -q "^${IP}/" <<<"$addrs" || [[ -n "${FIP:-}" ]]; then
+              ok "IPv4 address configured from the metadata/DHCP ($(grep -m1 -E '^[0-9]+\.' <<<"$addrs" || echo "via floating IP"))"
+            else
+              bad "public IPv4 $IP not configured on the node"
+            fi
+            dns=$("${TC[@]}" get resolvers -o json 2>/dev/null | jq -r '.spec.dnsServers[]?' | paste -sd' ' -)
+            [[ -n "$dns" ]] && ok "DNS resolvers configured ($dns)" || bad "no DNS resolver configured"
+            flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR")
+            eph=$("${TC[@]}" get volumestatus EPHEMERAL -o json 2>/dev/null | jq -r '.spec.size // empty' | head -1)
+            [[ "$eph" =~ ^[0-9]+$ ]] || { info "EPHEMERAL size: '${eph:-none}'"; eph=0; }
+            eph_gb=$(( eph / 1000000000 ))
+            if (( eph_gb >= flv_gb - 6 )); then
+              ok "EPHEMERAL volume grown to the flavor disk (${eph_gb} GB on ${flv_gb} GB)"
+            else
+              bad "EPHEMERAL volume not grown (${eph_gb} GB on a ${flv_gb} GB disk)"
+            fi
+            qga=""
+            for _ in $(seq 1 12); do
+              qga=$("${TC[@]}" service ext-qemu-guest-agent 2>/dev/null | awk '$1 == "STATE" { print $2 }')
+              [[ "$qga" == "Running" ]] && break
+              sleep 5
+            done
+            [[ "$qga" == "Running" ]] && ok "qemu-guest-agent extension running" || bad "qemu-guest-agent extension not running (state: ${qga:-absent})"
+            v6=$(openstack server show -f json -c addresses "$SRV_NAME" 2>/dev/null \
+              | python3 -c 'import json,sys,ipaddress
+        a=json.load(sys.stdin).get("addresses") or {}
+        ips=[ip for v in a.values() for ip in (v if isinstance(v,list) else [])]
+        print(next((i for i in ips if ipaddress.ip_address(i).version==6 and ipaddress.ip_address(i).is_global),""))' || echo '')
+            if [[ -z "$v6" ]]; then
+              info "no global IPv6 on the port: IPv6 check skipped"
+            else
+              ok6=""
+              for _ in $(seq 1 24); do
+                "${TC[@]}" get addresses -o json 2>/dev/null | jq -r '.spec.address' | grep -qi "^${v6}/" && { ok6=1; break; }
+                sleep 10
+              done
+              if [[ -n "$ok6" ]]; then ok "node configured its IPv6 address $v6"
+              elif [[ "${REQUIRE_IPV6:-false}" == "true" ]]; then bad "IPv6 address $v6 of the port not configured on the node"
+              else info "IPv6 address $v6 not configured on the node (not required)"; fi
+            fi
+          fi
+          echo "" >> "$SUMMARY"
+          if [[ "$FAIL" -ne 0 ]]; then
+            echo "**Result:** ❌ runtime smoke failed" >> "$SUMMARY"
+          else
+            echo "**Result:** ✅ runtime smoke passed (talos contract: boot + machine config + Talos API + guest agent on Infomaniak)" >> "$SUMMARY"
+          fi
+          echo "fail=$FAIL"     >> "$GITHUB_OUTPUT"
+          echo "fip=${FIP:-}"   >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
         # ---- 6. Probe SSH (TCP-open + handshake) ----

@@ -87,7 +87,7 @@ on:
         required: false
         default: ''
       runtime_smoke_contract:
-        description: 'Contract of the runtime smoke: full (default, cloud-init images) or appliance (network appliances with the openimages.cloud first-boot layer, e.g. OPNsense). See actions/smoke-openstack.'
+        description: 'Contract of the runtime smoke: full (default, cloud-init images), appliance (network appliances with the openimages.cloud first-boot layer, e.g. OPNsense) or talos (Talos Linux, checks through the Talos API). See actions/smoke-openstack.'
         type: string
         required: false
         default: 'full'
@@ -202,7 +202,8 @@ jobs:
           VERSION: ${{ steps.vars.outputs.version }}
         run: |
           set -eu
-          freebsd-version -ku
+          # build_runner may also be a Linux runner (Talos: Sidero's imager container)
+          freebsd-version -ku 2>/dev/null || uname -sr
           sudo -E sh "$BUILD_SCRIPT" "$VERSION" "$(pwd)/build/output"
           sudo chown -R "$(id -u)" build/output
           ls -l build/output
