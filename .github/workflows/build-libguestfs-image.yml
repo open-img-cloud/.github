@@ -39,6 +39,18 @@ on:
         description: 'Optional expected SHA-256 (64 hex) or SHA-512 (128 hex) of the base image, for upstreams that publish their checksums only on a web page (Oracle Linux templates): the caller extracts the hash in a prior job and passes it here. When set, it takes precedence over upstream_checksum_url and a mismatch fails the build.'
         type: string
         default: ''
+      upstream_signed_checksum_url:
+        description: 'Optional OpenPGP clear-signed checksum file for the base image (Flatcar <image>.DIGESTS.asc). With upstream_gpg_key_url and upstream_gpg_fingerprint, a job on the runner verifies its signature against that primary key fingerprint and the SHA-256/512 it lists for the base image becomes the mandatory expected hash. {version} is substituted.'
+        type: string
+        default: ''
+      upstream_gpg_key_url:
+        description: 'URL of the upstream OpenPGP public key (fetched on each run, so rotated subkeys are picked up). Used with upstream_signed_checksum_url.'
+        type: string
+        default: ''
+      upstream_gpg_fingerprint:
+        description: 'Pinned fingerprint (40 hex) of the upstream primary key: the signature must be VALIDSIG with this primary key, whatever subkey signed it.'
+        type: string
+        default: ''
       decompress:
         description: 'Decompression to apply to the downloaded base: none|xz|gz|zst|bz2.'
         type: string
@@ -136,7 +148,7 @@ on:
         type: boolean
         default: false
       contract:
-        description: 'Runtime contract checked by the smoke tests: "full" (default, IMAGE_STANDARDS section K) or "minimal" for test images without cloud-init (CirrOS): the key comes from the metadata (meta_data.json public_keys) for runtime_smoke_login_user, and the cloud-init, guest agent and no-SSH-password checks are skipped or only reported. SSH with the injected key, DNS, hostname, root growth, sudo and IPv6 stay required.'
+        description: 'Runtime contract checked by the smoke tests: "full" (default, IMAGE_STANDARDS section K), "flatcar" (Ignition and afterburn instead of cloud-init: keys from the metadata for runtime_smoke_login_user, systemd reaching running instead of the cloud-init check, every other check as full) or "minimal" for test images without cloud-init (CirrOS): the key comes from the metadata (meta_data.json public_keys) for runtime_smoke_login_user, and the cloud-init, guest agent and no-SSH-password checks are skipped or only reported. SSH with the injected key, DNS, hostname, root growth, sudo and IPv6 stay required.'
         type: string
         default: 'full'
 
@@ -198,12 +210,58 @@ jobs:
           echo "Verified $IMAGE @ $digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+  verify-upstream:
+    name: Verify upstream OpenPGP signature
+    if: ${{ inputs.upstream_gpg_fingerprint != '' }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    outputs:
+      hash: ${{ steps.verify.outputs.hash }}
+    steps:
+      - name: Verify the signed checksum file
+        id: verify
+        shell: bash
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_UPSTREAM: ${{ inputs.upstream_url }}
+          IN_SIGNED: ${{ inputs.upstream_signed_checksum_url }}
+          KEY_URL: ${{ inputs.upstream_gpg_key_url }}
+          FPR: ${{ inputs.upstream_gpg_fingerprint }}
+        run: |
+          set -euo pipefail
+          version="${IN_VERSION:-${GITHUB_REF_NAME#v}}"
+          upstream_url="${IN_UPSTREAM//\{version\}/$version}"
+          signed_url="${IN_SIGNED//\{version\}/$version}"
+          fpr=$(printf '%s' "$FPR" | tr -d '[:space:]' | tr 'a-f' 'A-F')
+          if [[ ! "$fpr" =~ ^[0-9A-F]{40}$ || -z "$KEY_URL" || -z "$signed_url" ]]; then
+            echo "::error::upstream_gpg_fingerprint (40 hex), upstream_gpg_key_url and upstream_signed_checksum_url are needed together"
+            exit 1
+          fi
+          export GNUPGHOME=$(mktemp -d)
+          curl -fsSL --retry 3 -o key.asc "$KEY_URL"
+          gpg --batch --quiet --import key.asc
+          curl -fsSL --retry 3 -o sums.asc "$signed_url"
+          # VALIDSIG <signing key fpr> ... <primary key fpr>: pin the primary key.
+          status=$(gpg --batch --status-fd 1 --output sums.txt --decrypt sums.asc 2>/dev/null || true)
+          primary=$(printf '%s\n' "$status" | awk '$2 == "VALIDSIG" { print $NF }' | tail -1)
+          if [[ "$primary" != "$fpr" ]]; then
+            echo "::error::no valid signature by primary key $fpr on $signed_url (got: ${primary:-none})"
+            exit 1
+          fi
+          file="${upstream_url##*/}"
+          hash=$(awk -v f="$file" '($2 == f || $2 == "*" f) && (length($1) == 64 || length($1) == 128) { print tolower($1) }' sums.txt | awk '{ print length($0), $0 }' | sort -rn | head -1 | cut -d' ' -f2)
+          if [[ -z "$hash" ]]; then
+            echo "::error::no SHA-256/SHA-512 for $file in the signed $signed_url"
+            exit 1
+          fi
+          echo "Signature by $fpr verified; expected hash of $file: $hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ inputs.os_name }} ${{ inputs.version || github.ref_name }}
-    needs: verify-builder
+    needs: [verify-builder, verify-upstream]
     # If verify_builder is false, the verify-builder job is skipped; this `if`
     # ensures the build still runs in that case (skipped needs() are fatal otherwise).
-    if: ${{ always() && (needs.verify-builder.result == 'success' || needs.verify-builder.result == 'skipped') }}
+    if: ${{ always() && (needs.verify-builder.result == 'success' || needs.verify-builder.result == 'skipped') && (needs.verify-upstream.result == 'success' || needs.verify-upstream.result == 'skipped') }}
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
     container:
       image: ${{ inputs.build_container }}
@@ -239,12 +297,12 @@ jobs:
           set -euo pipefail
           case "$IN_CONTRACT" in
             full) ;;
-            minimal)
+            minimal|flatcar)
               if [[ -z "$IN_LOGIN_USER" ]]; then
-                echo "::error::contract: minimal needs runtime_smoke_login_user (the image's own user, keys from the metadata)"
+                echo "::error::contract: $IN_CONTRACT needs runtime_smoke_login_user (the image's own user, keys from the metadata)"
                 exit 1
               fi ;;
-            *) echo "::error::contract must be 'full' or 'minimal', got '$IN_CONTRACT'"; exit 1 ;;
+            *) echo "::error::contract must be 'full', 'minimal' or 'flatcar', got '$IN_CONTRACT'"; exit 1 ;;
           esac
           if [[ "$IN_PASSTHROUGH" == "true" && "$IN_DECOMPRESS" != "none" ]]; then
             echo "::error::passthrough: true needs decompress: none (the published file must be the upstream file)"
@@ -308,7 +366,7 @@ jobs:
         env:
           UPSTREAM_URL: ${{ steps.vars.outputs.upstream_url }}
           UPSTREAM_SUM_URL: ${{ steps.vars.outputs.upstream_checksum_url }}
-          UPSTREAM_SHA256: ${{ inputs.upstream_sha256 }}
+          UPSTREAM_SHA256: ${{ inputs.upstream_sha256 || needs.verify-upstream.outputs.hash }}
         run: |
           set -euo pipefail
           echo "Fetching $UPSTREAM_URL"
@@ -349,7 +407,7 @@ jobs:
             curl -fL --silent --show-error --retry 3 --retry-delay 5 -o build/work/base.sums "$UPSTREAM_SUM_URL"
             expected=$(awk -v f="$file" '
               ($1 == "SHA256" || $1 == "SHA512") && $2 == "(" f ")" { print $4; exit }
-              $2 == f || $2 == "*" f { print $1; exit }' build/work/base.sums)
+              ($2 == f || $2 == "*" f) && (length($1) == 64 || length($1) == 128) { print $1; exit }' build/work/base.sums)
             # Per-file checksum holding the hash alone (Alpine .sha512).
             if [[ -z "$expected" ]]; then
               expected=$(awk 'NF { if (NF == 1 && $1 ~ /^[0-9a-fA-F]+$/ && (length($1) == 64 || length($1) == 128)) print tolower($1); exit }' build/work/base.sums)
@@ -583,7 +641,7 @@ jobs:
           smoke_user=smoketest
           marker_cmd='cat /etc/cloud-init-smoke-ok'
           marker_want=smoke
-          if [[ "$CONTRACT" == "minimal" ]]; then
+          if [[ "$CONTRACT" == "minimal" || "$CONTRACT" == "flatcar" ]]; then
             cat > "$work/seed/openstack/latest/meta_data.json" <<EOF
           {
             "uuid": "smoke-${RANDOM}-${RANDOM}",
