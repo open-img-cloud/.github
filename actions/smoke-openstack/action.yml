@@ -513,7 +513,9 @@ runs:
         if [[ "$CONTRACT" == "appliance" ]]; then
           fb=""
           for _ in $(seq 1 24); do
-            fb=$($SSH 'tail -1 /var/log/oic-firstboot.log 2>/dev/null' || echo '')
+            # 'status: done' may be followed by lines of background steps
+            # (the nova password store): look for it, not at the last line.
+            fb=$($SSH 'grep -m1 "status: done" /var/log/oic-firstboot.log 2>/dev/null || tail -1 /var/log/oic-firstboot.log 2>/dev/null' || echo '')
             [[ "$fb" == *"status: done"* ]] && break
             sleep 5
           done
