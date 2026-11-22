@@ -68,6 +68,15 @@ Versions below are read live from each image's published manifest.
 
 <sup>2</sup> 14.5 is the last FreeBSD 14 release; the 14 branch is supported until 2028-11-30. Prefer FreeBSD 15 for new deployments.
 
+### Container and Kubernetes OS
+
+| Image | Latest | Login | Status | Repository |
+|---|---|---|---|---|
+| [Flatcar Container Linux](https://openimages.cloud/images/flatcar/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Fflatcar%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | `core` | ✅ Stable | [`flatcar`](https://github.com/open-img-cloud/flatcar) |
+| [Talos Linux](https://openimages.cloud/images/talos-linux/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ftalos-linux%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | `talosctl` (no SSH) | ✅ Stable | [`talos-linux`](https://github.com/open-img-cloud/talos-linux) |
+
+> Immutable systems without cloud-init. Flatcar is the official Stable OpenStack image republished unchanged (OpenPGP-verified), configured with Ignition, and updates itself. Talos is built with Sidero Labs' signed imager and the qemu-guest-agent extension, managed through its API; community image, not an official Sidero Labs product.
+
 ### Network appliance
 
 | Image | Latest | Login user | Status | Repository |

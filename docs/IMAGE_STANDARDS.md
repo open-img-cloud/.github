@@ -170,7 +170,8 @@ this document AND the cert-identity regex in section A.
   alpine 06:23, alma10 06:26, AL2023 06:29, debian12 06:32, AL2 06:35,
   debian13 06:38, OL9 06:41, ubuntu22.04 06:44, OL10 06:47, ubuntu24.04 06:50,
   gentoo 06:53, ubuntu26.04 06:56, nixos 06:59, freebsd-15 07:14,
-  freebsd-14 07:35, opnsense 07:41. Pick a free `:NN` for new repos.
+  freebsd-14 07:35, opnsense 07:41, flatcar 07:44,
+  talos-linux 07:47. Pick a free `:NN` for new repos.
 - **`detect-upstream.sh`** prints the latest upstream version on
   stdout (single line, no extra output) and exits 0. Failures (no
   reachable upstream, parse error) exit non-zero with `::error::`.
