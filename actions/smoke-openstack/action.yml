@@ -81,6 +81,14 @@ inputs:
       usual rules.
     required: false
     default: 'full'
+  image_path:
+    description: |
+      Optional local qcow2 to upload to Glance instead of importing the
+      published URL: smoke tests of an image that is not published yet
+      (a private repository's build artifact). Empty (default): the URL
+      https://<cdn_hostname>/<os_name>/<version>/<filename>.
+    required: false
+    default: ''
 
   # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
   os_auth_url:
@@ -208,6 +216,7 @@ runs:
         STRICT:                            ${{ inputs.strict }}
         REQUIRE_IPV6:                      ${{ inputs.require_ipv6 }}
         CONTRACT:                          ${{ inputs.contract }}
+        IMAGE_PATH:                        ${{ inputs.image_path }}
         CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
@@ -271,7 +280,7 @@ runs:
         echo "## Runtime smoke: \`${OS_NAME}/${VERSION}/${FILENAME}\` on Infomaniak" >> "$SUMMARY"
         echo "" >> "$SUMMARY"
         info "Tag: $TAG"
-        info "Image URL: $IMG_URL"
+        if [[ -n "$IMAGE_PATH" ]]; then info "Image file: $IMAGE_PATH"; else info "Image URL: $IMG_URL"; fi
 
         # Local SSH keypair (private kept on runner, public uploaded).
         WORK=$(mktemp -d)
@@ -309,8 +318,19 @@ runs:
           "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
           "$IMG_NAME" >/dev/null
 
-        info "Glance: triggering web-download import from $IMG_URL"
-        if openstack image import \
+        if [[ -n "$IMAGE_PATH" ]]; then
+          # Unpublished image: upload the local file (synchronous).
+          info "Glance: uploading the local $(du -h "$IMAGE_PATH" | cut -f1) $IMAGE_PATH (not published yet)"
+          for id in $(openstack image list -f value -c ID --name "$IMG_NAME" 2>/dev/null); do
+            openstack image delete "$id" >/dev/null 2>&1 || true
+          done
+          openstack image create \
+            --disk-format qcow2 --container-format bare \
+            --file "$IMAGE_PATH" \
+            --tag "$TAG" \
+            "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
+            "$IMG_NAME" >/dev/null
+        elif info "Glance: triggering web-download import from $IMG_URL" && openstack image import \
             --method web-download \
             --uri "$IMG_URL" \
             "$IMG_NAME" 2>/tmp/img-import.err; then
