@@ -81,6 +81,14 @@ inputs:
       usual rules.
     required: false
     default: 'full'
+  image_path:
+    description: |
+      Optional local qcow2 to upload to Glance instead of importing the
+      published URL: smoke tests of an image that is not published yet
+      (a private repository's build artifact). Empty (default): the URL
+      https://<cdn_hostname>/<os_name>/<version>/<filename>.
+    required: false
+    default: ''
 
   # --- secrets bridged through inputs (composite actions can't read secrets directly) ---
   os_auth_url:
@@ -208,6 +216,7 @@ runs:
         STRICT:                            ${{ inputs.strict }}
         REQUIRE_IPV6:                      ${{ inputs.require_ipv6 }}
         CONTRACT:                          ${{ inputs.contract }}
+        IMAGE_PATH:                        ${{ inputs.image_path }}
         CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
@@ -271,7 +280,7 @@ runs:
         echo "## Runtime smoke: \`${OS_NAME}/${VERSION}/${FILENAME}\` on Infomaniak" >> "$SUMMARY"
         echo "" >> "$SUMMARY"
         info "Tag: $TAG"
-        info "Image URL: $IMG_URL"
+        if [[ -n "$IMAGE_PATH" ]]; then info "Image file: $IMAGE_PATH"; else info "Image URL: $IMG_URL"; fi
 
         # Local SSH keypair (private kept on runner, public uploaded).
         WORK=$(mktemp -d)
@@ -309,8 +318,19 @@ runs:
           "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
           "$IMG_NAME" >/dev/null
 
-        info "Glance: triggering web-download import from $IMG_URL"
-        if openstack image import \
+        if [[ -n "$IMAGE_PATH" ]]; then
+          # Unpublished image: upload the local file (synchronous).
+          info "Glance: uploading the local $(du -h "$IMAGE_PATH" | cut -f1) $IMAGE_PATH (not published yet)"
+          for id in $(openstack image list -f value -c ID --name "$IMG_NAME" 2>/dev/null); do
+            openstack image delete "$id" >/dev/null 2>&1 || true
+          done
+          openstack image create \
+            --disk-format qcow2 --container-format bare \
+            --file "$IMAGE_PATH" \
+            --tag "$TAG" \
+            "${QGA_PROPS[@]}" "${FW_PROPS[@]}" \
+            "$IMG_NAME" >/dev/null
+        elif info "Glance: triggering web-download import from $IMG_URL" && openstack image import \
             --method web-download \
             --uri "$IMG_URL" \
             "$IMG_NAME" 2>/tmp/img-import.err; then
@@ -493,7 +513,9 @@ runs:
         if [[ "$CONTRACT" == "appliance" ]]; then
           fb=""
           for _ in $(seq 1 24); do
-            fb=$($SSH 'tail -1 /var/log/oic-firstboot.log 2>/dev/null' || echo '')
+            # 'status: done' may be followed by lines of background steps
+            # (the nova password store): look for it, not at the last line.
+            fb=$($SSH 'grep -m1 "status: done" /var/log/oic-firstboot.log 2>/dev/null || tail -1 /var/log/oic-firstboot.log 2>/dev/null' || echo '')
             [[ "$fb" == *"status: done"* ]] && break
             sleep 5
           done
@@ -640,7 +662,9 @@ runs:
             bad "web interface not reachable on https://${IP}/ (HTTP $gui)"
           fi
           enc=""
-          for _ in $(seq 1 12); do
+          # The guest stores it from a background loop once its metadata
+          # service answers (DHCP can be slow): wait up to 3 minutes.
+          for _ in $(seq 1 36); do
             enc=$(python3 - "$SRV_NAME" <<'PY' 2>/dev/null || true
         import sys, openstack
         conn = openstack.connect()
@@ -663,6 +687,20 @@ runs:
             fi
           else
             bad "no password readable with nova get-password"
+            # Diagnostics: the SDK error and the first-boot log (it never
+            # records a password).
+            [[ -n "$enc" ]] && info "an encrypted password is stored but does not decrypt with the test key"
+            if [[ -z "$enc" ]]; then
+              python3 - "$SRV_NAME" <<'PY' >/tmp/pw-err.txt 2>&1 || true
+        import sys, openstack
+        conn = openstack.connect()
+        server = conn.compute.find_server(sys.argv[1], ignore_missing=False)
+        print("stored value:", repr(conn.compute.get_server_password(server)))
+        PY
+              info "get_server_password:"; tail -n 5 /tmp/pw-err.txt
+            fi
+            info "/var/log/oic-firstboot.log:"
+            $SSH "cat /var/log/oic-firstboot.log" 2>/dev/null | sed 's/^/    /' || true
           fi
         fi
 
