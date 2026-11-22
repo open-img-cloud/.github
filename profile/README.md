@@ -63,10 +63,18 @@ Versions below are read live from each image's published manifest.
 
 | Image | Latest | Variants | Login user | Status | Repository |
 |---|---|---|---|---|---|
-| [FreeBSD 15](https://openimages.cloud/images/freebsd-15/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ffreebsd-15%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `freebsd` | ✅ Stable | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
-| [FreeBSD 14](https://openimages.cloud/images/freebsd-14/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ffreebsd-14%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `freebsd` | ✅ Stable<sup>2</sup> | [`freebsd`](https://github.com/open-img-cloud/freebsd) |
+| [FreeBSD 15](https://openimages.cloud/images/freebsd-15/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ffreebsd-15%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `freebsd` | ✅ Stable | [`freebsd-15`](https://github.com/open-img-cloud/freebsd-15) |
+| [FreeBSD 14](https://openimages.cloud/images/freebsd-14/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Ffreebsd-14%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) |  | `freebsd` | ✅ Stable<sup>2</sup> | [`freebsd-14`](https://github.com/open-img-cloud/freebsd-14) |
 
 <sup>2</sup> 14.5 is the last FreeBSD 14 release; the 14 branch is supported until 2028-11-30. Prefer FreeBSD 15 for new deployments.
+
+### Network appliance
+
+| Image | Latest | Login user | Status | Repository |
+|---|---|---|---|---|
+| [OPNsense](https://openimages.cloud/images/opnsense/) | ![latest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fimages.openimages.cloud%2Fopnsense%2Flatest%2FMANIFEST.json&query=%24.version&label=latest&color=2459c4&cacheSeconds=3600) | `root` | ✅ Stable | [`opnsense`](https://github.com/open-img-cloud/opnsense) |
+
+> Community image built from the official signed OPNsense nano image, not an official OPNsense or Deciso product. No cloud-init: a small first-boot layer applies the SSH keys, hostname and web interface password from the instance metadata; the web interface is open on the WAN after boot.
 
 ### OpenStack components
 
@@ -138,7 +146,7 @@ Storage: [Infomaniak Object Storage](https://www.infomaniak.com/en/hosting/publi
 
 ## Licensing
 
-Image repositories are released under **GPL-2.0** (GPL-3.0 for `freebsd`), the website under **Apache-2.0**. See each repository's `LICENSE`.
+Image repositories are released under **GPL-2.0** (GPL-3.0 for `freebsd-15` and `freebsd-14`, BSD-2-Clause for `opnsense`), the website under **Apache-2.0**. See each repository's `LICENSE`.
 
 ⚠️ **The OS images themselves keep the licensing terms of their upstream distributions** (Alpine, Amazon Linux, NixOS, Oracle Linux…). Review them before production use.
 
