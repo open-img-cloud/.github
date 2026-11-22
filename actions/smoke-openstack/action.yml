@@ -527,9 +527,16 @@ runs:
             openstack console log show "$SRV_NAME" | tail -${CONSOLE_LINES:-100} || true
           else
             ok "Talos API answers with the generated machine config (config applied, mTLS)"
-            info "$("${TC[@]}" version 2>/dev/null | grep -m1 -A1 '^Server' | tail -1 | sed 's/^[[:space:]]*//')"
+            # A control plane stays in stage "booting" until etcd is
+            # bootstrapped: bootstrap this single node, which also proves
+            # that Kubernetes comes up on the image.
+            if "${TC[@]}" bootstrap >/dev/null 2>&1; then
+              info "etcd bootstrapped on the single node"
+            else
+              bad "talosctl bootstrap failed"
+            fi
             stage=""
-            for _ in $(seq 1 36); do
+            for _ in $(seq 1 120); do
               stage=$("${TC[@]}" get machinestatus -o json 2>/dev/null | jq -r '.spec.stage' | head -1)
               [[ "$stage" == "running" ]] && break
               sleep 5
@@ -543,7 +550,7 @@ runs:
             fi
             addrs=$("${TC[@]}" get addresses -o json 2>/dev/null | jq -r '.spec.address' | sort -u)
             if grep -q "^${IP}/" <<<"$addrs" || [[ -n "${FIP:-}" ]]; then
-              ok "IPv4 address configured from the metadata/DHCP ($(grep -m1 -E '^[0-9]+\.' <<<"$addrs" || echo "via floating IP"))"
+              ok "IPv4 address configured from the metadata/DHCP (${FIP:+floating IP }$IP)"
             else
               bad "public IPv4 $IP not configured on the node"
             fi
@@ -656,8 +663,15 @@ runs:
           # when systemd reaches 'running' (afterburn installed the key, as
           # SSH just proved; extend-filesystems and the hostname unit ran).
           st=$($SSH 'timeout 300 systemctl is-system-running --wait 2>/dev/null' || true)
+          # systemd-networkd-wait-online times out when DHCP is slow at boot
+          # (2 minutes; the network comes up afterwards, as the DNS and IPv6
+          # checks prove): reported, not fatal.
+          failed=$($SSH 'systemctl --failed --no-legend --plain | awk "{print \$1}"' 2>/dev/null | grep -v '^$' || true)
+          others=$(grep -vx 'systemd-networkd-wait-online.service' <<<"$failed" || true)
           if [[ "$st" == *running* && "$st" != *degraded* ]]; then
             ok "systemd reports 'running' (Ignition and afterburn first boot finished)"
+          elif [[ "$st" == *degraded* && -n "$failed" && -z "$others" ]]; then
+            ok "systemd reports 'degraded' only because systemd-networkd-wait-online timed out (slow DHCP at boot); first boot finished"
           else
             bad "systemd reports '${st:-unknown}' instead of 'running'"
             echo "::group::failed units"
@@ -753,7 +767,11 @@ runs:
         flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
         root_kb=$(probe "df -kP / | awk 'NR==2 {print \$2}'")
         root_gb=$(( ${root_kb:-0} / 1024 / 1024 ))
-        if (( flv_gb > 0 && root_gb * 10 >= flv_gb * 8 )); then
+        # Flatcar keeps about 6 GB of system partitions (EFI, USR-A and USR-B
+        # for A/B updates, OEM) before ROOT: allow for them.
+        reserve_gb=0
+        [[ "$CONTRACT" == "flatcar" ]] && reserve_gb=7
+        if (( flv_gb > 0 && (root_gb + reserve_gb) * 10 >= flv_gb * 8 )); then
           contract ok "root partition and filesystem grown to the flavor disk (${root_gb} of ${flv_gb} GB)"
         else
           contract ko "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
