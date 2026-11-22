@@ -683,6 +683,20 @@ runs:
             fi
           else
             bad "no password readable with nova get-password"
+            # Diagnostics: the SDK error and the first-boot log (it never
+            # records a password).
+            [[ -n "$enc" ]] && info "an encrypted password is stored but does not decrypt with the test key"
+            if [[ -z "$enc" ]]; then
+              python3 - "$SRV_NAME" <<'PY' >/tmp/pw-err.txt 2>&1 || true
+        import sys, openstack
+        conn = openstack.connect()
+        server = conn.compute.find_server(sys.argv[1], ignore_missing=False)
+        print("stored value:", repr(conn.compute.get_server_password(server)))
+        PY
+              info "get_server_password:"; tail -n 5 /tmp/pw-err.txt
+            fi
+            info "/var/log/oic-firstboot.log:"
+            $SSH "cat /var/log/oic-firstboot.log" 2>/dev/null | sed 's/^/    /' || true
           fi
         fi
 
