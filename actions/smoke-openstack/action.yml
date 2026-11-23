@@ -791,6 +791,19 @@ runs:
         else
           contract ko "root filesystem not grown (${root_gb} GB on a ${flv_gb} GB flavor disk)"
         fi
+        # Disk bus: when the image is registered with hw_disk_bus=scsi (the
+        # catalog default), the guest must see its disk on virtio-scsi (Linux
+        # sd*, FreeBSD da*), not on virtio-blk (vd*, vtbd*): otherwise the
+        # cloud ignored the property and the smoke did not test what users
+        # deploy.
+        if [[ " ${GLANCE_PROPERTIES:-} " == *" hw_disk_bus=scsi "* ]]; then
+          disks=$(probe 'if [ -d /sys/block ]; then ls /sys/block; else sysctl -n kern.disks; fi' | tr '\n' ' ')
+          if [[ " $disks " =~ \ (sd[a-z]+|da[0-9]+)\  ]]; then
+            contract ok "guest disk on virtio-scsi as hw_disk_bus=scsi asks (disks: ${disks% })"
+          else
+            contract ko "hw_disk_bus=scsi asked but the guest sees no SCSI disk (disks: ${disks% }): the cloud ignored the property"
+          fi
+        fi
         if [[ "$CONTRACT" == "appliance" ]]; then
           info "contract appliance: the login user is root, no sudo check"
         elif $SSH 'sudo -n true 2>/dev/null || doas -n true 2>/dev/null'; then
