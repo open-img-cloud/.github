@@ -93,6 +93,21 @@ on:
         type: string
         required: false
         default: ''
+      apt_mirror:
+        description: 'Ubuntu mirror for the build container own apt (archive.ubuntu.com is replaced). Default: Azure mirror, next to the GitHub-hosted runners; empty keeps archive.ubuntu.com. On 2026-11-23 archive.ubuntu.com took tens of seconds per small package from the runners.'
+        type: string
+        required: false
+        default: 'http://azure.archive.ubuntu.com/ubuntu'
+      dib_distribution_mirror:
+        description: 'Exported as DIB_DISTRIBUTION_MIRROR to the build script when set. Its meaning depends on the DIB distro element (an Ubuntu mirror for ubuntu-minimal, a Gentoo mirror for gentoo): set it only in Ubuntu-based callers, e.g. http://azure.archive.ubuntu.com/ubuntu. Empty (default): DIB default.'
+        type: string
+        required: false
+        default: ''
+      build_timeout_minutes:
+        description: 'Time limit of the build script step: a stuck network fetch fails the run instead of blocking it for hours (cancel requests are not always honoured inside the privileged container). Default 120 covers Gentoo (30 to 70 minutes); Ubuntu-based service images build in under 10.'
+        type: number
+        required: false
+        default: 120
 
     # See build-libguestfs-image.yml for rationale: all publish-related secrets
     # are optional; runtime validation in the build job fails fast when
@@ -181,9 +196,15 @@ jobs:
         # Skip on non-apt containers (e.g. if a future caller swaps to
         # a Fedora-based DIB builder).
         shell: bash
+        env:
+          APT_MIRROR: ${{ inputs.apt_mirror }}
         run: |
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
+            if [[ -n "${APT_MIRROR}" ]]; then
+              sed -i "s#http://archive.ubuntu.com/ubuntu#${APT_MIRROR%/}#g" \
+                /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+            fi
             apt-get update -y
             apt-get install -y --no-install-recommends \
               gettext-base ca-certificates curl git sudo unzip
@@ -252,11 +273,17 @@ jobs:
 
       - name: Run caller DIB build script
         shell: bash
+        timeout-minutes: ${{ inputs.build_timeout_minutes }}
         env:
           BUILD_SCRIPT: ${{ inputs.build_script }}
           VERSION: ${{ steps.vars.outputs.version }}
+          DIB_MIRROR: ${{ inputs.dib_distribution_mirror }}
         run: |
           set -euo pipefail
+          if [[ -n "$DIB_MIRROR" ]]; then
+            export DIB_DISTRIBUTION_MIRROR="$DIB_MIRROR"
+            echo "DIB_DISTRIBUTION_MIRROR=$DIB_DISTRIBUTION_MIRROR"
+          fi
           if [[ ! -f "$BUILD_SCRIPT" ]]; then
             echo "::error::build_script not found: $BUILD_SCRIPT"
             exit 1
