@@ -261,7 +261,7 @@ runs:
         for kv in ${GLANCE_PROPERTIES:-}; do
           QGA_PROPS+=(--property "$kv")
         done
-        info "Glance properties: ${QGA_PROPS[*]//--property /}"
+        info "Glance properties: $( [[ "$CONTRACT" == "minimal" ]] || printf "hw_qemu_guest_agent=yes " )${GLANCE_PROPERTIES:-}"
 
         # Spread smokes over the available regions (same project and
         # credential in each): catches region-specific breakage over time.

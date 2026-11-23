@@ -5,8 +5,6 @@ name: Smoke published images
 # catalog after a change of the smoke or of the catalog Glance properties,
 # without rebuilding anything. Every artifact (variant) of each id is tested.
 on:
-  push:   # TEMPORARY: test on the branch, removed before merge
-    branches: [smoke-catalog-props]
   workflow_dispatch:
     inputs:
       images:
@@ -24,7 +22,7 @@ jobs:
     steps:
       - id: m
         env:
-          IMAGES: ${{ inputs.images || 'debian-13 freebsd-15 opnsense alpine-linux talos-linux flatcar cirros rocky-linux-9' }}
+          IMAGES: ${{ inputs.images }}
         run: |
           set -euo pipefail
           curl -fsS -A openimages-ci https://images.openimages.cloud/index.json > index.json
