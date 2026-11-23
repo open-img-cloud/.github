@@ -1,0 +1,70 @@
+name: Smoke published images
+
+# Manual: runs the runtime smoke (actions/smoke-openstack, at this ref) on
+# images already published in the catalog, chosen by id. Re-validates the
+# catalog after a change of the smoke or of the catalog Glance properties,
+# without rebuilding anything. Every artifact (variant) of each id is tested.
+on:
+  push:   # TEMPORARY: test on the branch, removed before merge
+    branches: [smoke-catalog-props]
+  workflow_dispatch:
+    inputs:
+      images:
+        description: 'Space-separated catalog ids (e.g. debian-13 freebsd-15 opnsense)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          IMAGES: ${{ inputs.images || 'debian-13 freebsd-15 opnsense alpine-linux talos-linux flatcar cirros rocky-linux-9' }}
+        run: |
+          set -euo pipefail
+          curl -fsS -A openimages-ci https://images.openimages.cloud/index.json > index.json
+          ids=$(printf '%s\n' $IMAGES | jq -R . | jq -s .)
+          # Contract per image; service images (no login user) cannot be smoked this way.
+          jq -c --argjson ids "$ids" '[.images[] | select(.id as $i | $ids | index($i)) | . as $img
+            | ({"flatcar":"flatcar","talos-linux":"talos","opnsense":"appliance","cirros":"minimal"}[$img.id] // "full") as $contract
+            | select($contract == "talos" or $img.login_user != null)
+            | .artifacts[] | {
+                os_name: $img.id, version: .version, filename: (.url | split("/") | last),
+                login_user: ($img.login_user // "talos"), contract: $contract,
+                label: ($img.id + (if .variant then "/" + .variant else "" end))
+              }] | {include: .}' index.json > matrix.json
+          jq -r '.include[] | .label + " (" + .contract + ")"' matrix.json
+          [ "$(jq '.include | length' matrix.json)" -gt 0 ] || { echo "::error::no smokable image in: $IMAGES"; exit 1; }
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: plan
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cosign (talos contract)
+        if: matrix.contract == 'talos'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+      - name: Runtime smoke
+        uses: ./actions/smoke-openstack
+        with:
+          os_name:                          ${{ matrix.os_name }}
+          version:                          ${{ matrix.version }}
+          filename:                         ${{ matrix.filename }}
+          login_user:                       ${{ matrix.login_user }}
+          contract:                         ${{ matrix.contract }}
+          os_auth_url:                      ${{ secrets.OS_AUTH_URL }}
+          os_region_name:                   ${{ secrets.OS_REGION_NAME }}
+          os_application_credential_id:     ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          os_application_credential_secret: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}

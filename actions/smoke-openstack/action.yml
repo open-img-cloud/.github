@@ -94,6 +94,15 @@ inputs:
       usual rules.
     required: false
     default: 'full'
+  glance_properties:
+    description: |
+      Space-separated key=value Glance properties set on the throwaway image,
+      on top of hw_qemu_guest_agent and the UEFI ones: the image is tested
+      as users register it. Default: the catalog defaults every image
+      publishes in index.json (virtio-scsi disk, multiqueue NIC). Empty:
+      Nova defaults (virtio-blk), as before 2026-11-23.
+    required: false
+    default: 'hw_disk_bus=scsi hw_scsi_model=virtio-scsi hw_vif_multiqueue_enabled=true'
   image_path:
     description: |
       Optional local qcow2 to upload to Glance instead of importing the
@@ -230,6 +239,7 @@ runs:
         REQUIRE_IPV6:                      ${{ inputs.require_ipv6 }}
         CONTRACT:                          ${{ inputs.contract }}
         IMAGE_PATH:                        ${{ inputs.image_path }}
+        GLANCE_PROPERTIES:                 ${{ inputs.glance_properties }}
         CONSOLE_LINES:                     ${{ inputs.user_data != '' && '400' || '100' }}
         REGIONS:                           ${{ inputs.regions }}
       run: |
@@ -247,6 +257,11 @@ runs:
         # only for images that ship the agent (contract full).
         QGA_PROPS=(--property hw_qemu_guest_agent=yes)
         [[ "$CONTRACT" == "minimal" ]] && QGA_PROPS=()
+        # The catalog properties (disk bus, NIC queues): test what users register.
+        for kv in ${GLANCE_PROPERTIES:-}; do
+          QGA_PROPS+=(--property "$kv")
+        done
+        info "Glance properties: ${QGA_PROPS[*]//--property /}"
 
         # Spread smokes over the available regions (same project and
         # credential in each): catches region-specific breakage over time.
