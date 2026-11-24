@@ -11,6 +11,12 @@ name: Reusable upstream version watcher
 #   permissions:
 #     contents: write
 #     pull-requests: write
+# and SHOULD pass the private key of the oic-bot GitHub App:
+#   secrets:
+#     OIC_BOT_PRIVATE_KEY: ${{ secrets.OIC_BOT_PRIVATE_KEY }}
+# The PR is then opened by oic-bot (app id in the org variable OIC_BOT_APP_ID), so its CI runs
+# like any PR. Without the key it falls back to GITHUB_TOKEN, whose PRs start no workflow
+# without an approval.
 
 on:
   workflow_call:
@@ -41,6 +47,10 @@ on:
         description: 'Runner labels (defaults to GitHub-hosted ubuntu-latest, no KVM needed).'
         type: string
         default: '["ubuntu-latest"]'
+    secrets:
+      OIC_BOT_PRIVATE_KEY:
+        description: 'Private key of the oic-bot GitHub App (org secret). Optional: GITHUB_TOKEN otherwise.'
+        required: false
 
 permissions:
   contents: write
@@ -49,6 +59,8 @@ permissions:
 jobs:
   watch:
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    env:
+      OIC_BOT: ${{ secrets.OIC_BOT_PRIVATE_KEY != '' && vars.OIC_BOT_APP_ID != '' }}
     steps:
       - name: Checkout caller repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -105,10 +117,23 @@ jobs:
           mkdir -p "$(dirname "$VERSION_FILE")"
           printf '%s\n' "$LATEST" > "$VERSION_FILE"
 
+      - name: Token of the oic-bot app
+        id: bot
+        if: steps.compare.outputs.changed == 'true' && env.OIC_BOT == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc  # v3.4.0
+        with:
+          app-id: ${{ vars.OIC_BOT_APP_ID }}
+          private-key: ${{ secrets.OIC_BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
       - name: Open or update bump PR
         if: steps.compare.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1  # v8.1.3 (Node 24)
         with:
+          token: ${{ steps.bot.outputs.token || github.token }}
           branch: ${{ inputs.pr_branch }}
           delete-branch: true
           commit-message: "chore(${{ inputs.os_name }}): bump upstream to ${{ steps.detect.outputs.latest }}"
