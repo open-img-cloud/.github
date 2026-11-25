@@ -487,6 +487,13 @@ runs:
           USER_DATA="$(cat "$WORK/talos/controlplane.yaml")"
           info "talosctl v${VERSION} verified; machine config generated (passed as user data)"
         fi
+        # `server create --flavor <name>` makes the client resolve the name
+        # via GET /flavors/detail?name=..., which Infomaniak's Nova now
+        # rejects (400, "Additional properties are not allowed ('name' was
+        # unexpected)"). Resolve the name to its ID from the list and boot by
+        # ID (GET /flavors/<id>, which the API still accepts).
+        FLAVOR_ID=$(openstack flavor list --long -f json | jq -r --arg n "$FLAVOR" '.[]|select(.Name==$n)|.ID')
+        [[ -n "$FLAVOR_ID" ]] || { bad "flavor $FLAVOR not found in the flavor list"; exit 1; }
         info "Boot $SRV_NAME (flavor=$FLAVOR)"
         ud_args=()
         if [[ -n "${USER_DATA:-}" ]]; then
@@ -496,7 +503,7 @@ runs:
         openstack server create \
           "${ud_args[@]}" \
           --image "$IMG_NAME" \
-          --flavor "$FLAVOR" \
+          --flavor "$FLAVOR_ID" \
           --key-name "$KEY_NAME" \
           --security-group "$SG_NAME" \
           --network "$TENANT_NET" \
