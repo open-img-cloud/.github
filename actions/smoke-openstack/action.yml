@@ -439,8 +439,11 @@ runs:
         IMG_VSIZE=$(openstack image show -f value -c virtual_size "$IMG_NAME" 2>/dev/null || echo "")
         if [[ "$IMG_VSIZE" =~ ^[0-9]+$ ]]; then
           need_gb=$(( (IMG_VSIZE + 1073741823) / 1073741824 ))
-          flv_disk=$(openstack flavor show -f value -c disk "$FLAVOR")
-          flv_ram=$(openstack flavor show -f value -c ram "$FLAVOR")
+          # Infomaniak's Nova API rejects the name= query that `flavor show
+          # <name>` sends (400, "Additional properties are not allowed
+          # ('name' was unexpected)"), so read disk/ram from the flavor list.
+          flv_disk=$(openstack flavor list --long -f json | jq -r --arg n "$FLAVOR" '.[]|select(.Name==$n)|.Disk')
+          flv_ram=$(openstack flavor list --long -f json | jq -r --arg n "$FLAVOR" '.[]|select(.Name==$n)|.RAM')
           if (( flv_disk < need_gb )); then
             bigger=$(openstack flavor list --public -f json --long | python3 -c '
         import json, sys
@@ -571,7 +574,7 @@ runs:
             fi
             dns=$("${TC[@]}" get resolvers -o json 2>/dev/null | jq -r '.spec.dnsServers[]?' | paste -sd' ' -)
             [[ -n "$dns" ]] && ok "DNS resolvers configured ($dns)" || bad "no DNS resolver configured"
-            flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR")
+            flv_gb=$(openstack flavor list --long -f json | jq -r --arg n "$FLAVOR" '.[]|select(.Name==$n)|.Disk')
             eph=$("${TC[@]}" get volumestatus EPHEMERAL -o json 2>/dev/null | jq -r '.spec.size // empty' | head -1)
             [[ "$eph" =~ ^[0-9]+$ ]] || { info "EPHEMERAL size: '${eph:-none}'"; eph=0; }
             eph_gb=$(( eph / 1000000000 ))
@@ -779,7 +782,7 @@ runs:
         fi
         # growpart + resize: the root filesystem must use the flavor disk.
         # On ZFS, df only grows once the pool itself was expanded.
-        flv_gb=$(openstack flavor show -f value -c disk "$FLAVOR" 2>/dev/null || echo 0)
+        flv_gb=$(openstack flavor list --long -f json 2>/dev/null | jq -r --arg n "$FLAVOR" '.[]|select(.Name==$n)|.Disk'); flv_gb=${flv_gb:-0}
         root_kb=$(probe "df -kP / | awk 'NR==2 {print \$2}'")
         root_gb=$(( ${root_kb:-0} / 1024 / 1024 ))
         # Flatcar keeps about 6 GB of system partitions (EFI, USR-A and USR-B
